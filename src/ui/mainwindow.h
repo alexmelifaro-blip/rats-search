@@ -243,6 +243,8 @@ private:
     QLabel* peerCountLabel = nullptr;
     QLabel* dhtNodeCountLabel = nullptr;
     QLabel* torrentCountLabel = nullptr;
+    QLabel* fileCountLabel = nullptr;
+    QLabel* dataSizeLabel = nullptr;
     QLabel* spiderStatusLabel = nullptr;
     // Transient messages live here, next to (not on top of) the counters above.
     QLabel* statusMessageLabel = nullptr;
@@ -257,6 +259,8 @@ private:
     // State
     QString currentSearchQuery_;
     qint64 cachedTorrentCount_ = 0; // Local torrent count (from statistics)
+    qint64 cachedFileCount_ = 0; // Local file count (from statistics)
+    qint64 cachedTotalSize_ = 0; // Combined size of all local torrents, bytes
     qint64 cachedRemoteTorrentCount_ = 0; // Sum of torrents advertised by peers
     // Last torrent selected in each non-search tab, so switching tabs can
     // restore the details panel without querying widget-specific accessors.
