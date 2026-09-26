@@ -595,6 +595,14 @@ or they will be added automatically when you create or import a torrent.</source
         <translation>📦 Торренты: %1</translation>
     </message>
     <message>
+        <source>📄 Files: %1</source>
+        <translation>📄 Файлы: %1</translation>
+    </message>
+    <message>
+        <source>💾 Data: %1</source>
+        <translation>💾 Данные: %1</translation>
+    </message>
+    <message>
         <location filename="../src/ui/mainwindow.cpp" line="600"/>
         <source>Download cancelled</source>
         <translation>Загрузка отменена</translation>
