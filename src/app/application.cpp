@@ -214,8 +214,10 @@ void Application::wireSignals()
     connect(d_->crawler.get(), &net::Crawler::discovered, d_->indexing.get(),
         [this](const domain::Torrent& t) { d_->indexing->insert(t); });
 
-    // Let the crawler skip a metadata fetch for torrents already in the index.
-    d_->crawler->setKnownHashFilter([this](const QString& hash) { return d_->torrents->exists(hash); });
+    // Let the crawler skip a metadata fetch for torrents already in the index with
+    // their file list. A row stored without one is fetched again, and the insert
+    // path fills in whatever metadata the row was missing.
+    d_->crawler->setKnownHashFilter([this](const QString& hash) { return d_->torrents->hasMetadata(hash); });
 
     // A freshly indexed torrent triggers tracker scrapes.
     connect(d_->indexing.get(), &service::IndexingService::torrentIndexed, d_->trackers.get(),
