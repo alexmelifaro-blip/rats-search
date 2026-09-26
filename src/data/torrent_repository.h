@@ -82,6 +82,10 @@ public:
     bool update(const domain::Torrent& torrent);
     bool remove(const QString& hash);
     bool exists(const QString& hash);
+    // Stored AND carrying its file list. A row without one came from a source
+    // that had only the name (a remote search hit, an old import), and is worth
+    // another BEP 9 metadata fetch when the torrent turns up on the DHT again.
+    bool hasMetadata(const QString& hash);
     std::optional<domain::Torrent> get(const QString& hash, bool includeFiles = false);
 
     // Bulk lookup used by the dump importer, where a per-row round trip would
