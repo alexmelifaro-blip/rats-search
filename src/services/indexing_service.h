@@ -90,6 +90,13 @@ signals:
     void torrentIndexed(const domain::Torrent& torrent);
 
 private:
+    // Fill what `stored` lacks from `incoming`, a copy of the same torrent: the
+    // file list, size and piece length when the row has none, the content type
+    // once there are files to classify from, and the higher vote counts. Never
+    // overwrites a value the row already has. Writes the row back when anything
+    // changed and leaves `stored` matching what is now in the index.
+    void mergeExisting(domain::Torrent& stored, const domain::Torrent& incoming);
+
     data::TorrentRepository* repository_;
     FilterPolicy* filter_;
 };
