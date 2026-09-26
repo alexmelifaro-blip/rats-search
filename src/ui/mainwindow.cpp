@@ -141,7 +141,10 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     // may already be connected: peerCountChanged only fires on a change, and every
     // emit before connectSignals() is lost.
     if (app_->torrents()) {
-        cachedTorrentCount_ = app_->torrents()->statistics().torrents;
+        const auto stats = app_->torrents()->statistics();
+        cachedTorrentCount_ = stats.torrents;
+        cachedFileCount_ = stats.files;
+        cachedTotalSize_ = stats.totalSize;
     }
     if (app_->peers()) {
         cachedRemoteTorrentCount_ = app_->peers()->remoteTorrentsCount();
@@ -407,6 +410,8 @@ void MainWindow::setupStatusBar()
     peerCountLabel = new QLabel(tr("👥 Peers: %1").arg(0));
     dhtNodeCountLabel = new QLabel(tr("🌐 DHT: %1").arg(0));
     torrentCountLabel = new QLabel(tr("📦 Torrents: %1").arg(0));
+    fileCountLabel = new QLabel(tr("📄 Files: %1").arg(0));
+    dataSizeLabel = new QLabel(tr("💾 Data: %1").arg(rats::ui::formatSize(0)));
     spiderStatusLabel = new QLabel();
     refreshSpiderStatus();
 
@@ -426,6 +431,8 @@ void MainWindow::setupStatusBar()
     statusBar()->addWidget(peerCountLabel);
     statusBar()->addWidget(dhtNodeCountLabel);
     statusBar()->addWidget(torrentCountLabel);
+    statusBar()->addWidget(fileCountLabel);
+    statusBar()->addWidget(dataSizeLabel);
     statusBar()->addWidget(spiderStatusLabel);
     statusBar()->addWidget(statusMessageLabel, 1);
 
@@ -642,8 +649,10 @@ void MainWindow::connectServiceSignals()
     // Repository statistics drive the local torrent count authoritatively.
     if (app_->torrents()) {
         connect(app_->torrents(), &rats::data::TorrentRepository::statisticsChanged, this,
-            [this](qint64 torrents, qint64, qint64) {
+            [this](qint64 torrents, qint64 files, qint64 totalSize) {
                 cachedTorrentCount_ = torrents;
+                cachedFileCount_ = files;
+                cachedTotalSize_ = totalSize;
                 updateStatusBar();
             });
     }
@@ -1114,6 +1123,8 @@ void MainWindow::updateStatusBar()
     } else {
         torrentCountLabel->setText(tr("📦 Torrents: %1").arg(cachedTorrentCount_));
     }
+    fileCountLabel->setText(tr("📄 Files: %1").arg(cachedFileCount_));
+    dataSizeLabel->setText(tr("💾 Data: %1").arg(rats::ui::formatSize(cachedTotalSize_)));
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
