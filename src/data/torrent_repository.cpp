@@ -288,7 +288,11 @@ bool TorrentRepository::update(const Torrent& t)
     //
     // Every caller passes a Torrent it just read back with get(), so the row
     // rebuilt here is complete rather than a partial overwrite.
-    const RowSlot slot = resolve(t.hash);
+    //
+    // The stored row is read back so a changed size (a metadata backfill) moves
+    // the totalSize counter with it. File counts are not tracked here: they only
+    // change through updateFiles(), which accounts for them itself.
+    const RowSlot slot = resolve(t.hash, /*withRow*/ true);
     if (slot.id == 0)
         return false;
     if (slot.collided()) {
@@ -302,6 +306,8 @@ bool TorrentRepository::update(const Torrent& t)
 
     if (!db_->replace(kTorrents, values))
         return false;
+    if (slot.stored && slot.stored->size != t.size)
+        bumpStatistics(0, 0, t.size - slot.stored->size);
     emit torrentUpdated(t.hash);
     return true;
 }
@@ -339,6 +345,20 @@ bool TorrentRepository::exists(const QString& hash)
     // A collided slot is "not present": the torrent is absent, it simply cannot
     // be stored either.
     return slot.taken && slot.ours;
+}
+
+bool TorrentRepository::hasMetadata(const QString& hash)
+{
+    const qint64 id = rowIdFromHash(hash);
+    if (id == 0)
+        return false;
+    const auto rows
+        = db_->query(QStringLiteral("SELECT hash, files FROM torrents WHERE id = ? LIMIT 1"), { id });
+    if (rows.isEmpty())
+        return false;
+    const auto& row = rows.first();
+    return sameHash(row.value(QStringLiteral("hash")).toString(), hash)
+        && row.value(QStringLiteral("files")).toInt() > 0;
 }
 
 std::optional<Torrent> TorrentRepository::get(const QString& hash, bool includeFiles)
