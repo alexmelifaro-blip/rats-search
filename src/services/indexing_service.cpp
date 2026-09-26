@@ -38,26 +38,10 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
     // (e.g. from a peer) and return the stored entity.
     if (slot.stored) {
         domain::Torrent existing = *slot.stored;
+        mergeExisting(existing, torrent);
         result.success = true;
         result.alreadyExists = true;
         result.torrent = existing;
-
-        // Backfill the file list when the stored copy has none but the incoming
-        // one does. This heals a metadata-only row into a complete torrent
-        // instead of leaving the two out of sync.
-        if (existing.files == 0 && !torrent.fileList.isEmpty()
-            && repository_->updateFiles(existing.hash, torrent.fileList)) {
-            existing.fileList = torrent.fileList;
-            existing.files = torrent.fileList.size();
-            result.torrent = existing;
-        }
-
-        if (torrent.good > existing.good || torrent.bad > existing.bad) {
-            existing.good = qMax(existing.good, torrent.good);
-            existing.bad = qMax(existing.bad, torrent.bad);
-            repository_->update(existing);
-            result.torrent = existing;
-        }
         return result;
     }
 
@@ -154,25 +138,9 @@ IndexingService::BatchResult IndexingService::insertBatch(
         if (!options.mergeExisting)
             continue;
 
-        // Same merge rules as insert(): heal a metadata-only row with the file
-        // list the incoming copy carries, and keep the higher vote counts.
+        // Same merge rules as insert().
         domain::Torrent stored = *it;
-        // Keep the in-memory copy in step with what updateFiles() just wrote:
-        // update() below REPLACEs the whole row from this snapshot, so a stale
-        // files == 0 here would undo the backfill and leave the row claiming no
-        // files while the files table holds the list — which also re-triggers
-        // this branch (and its statistics delta) on every later import.
-        if (stored.files == 0 && !incoming.fileList.isEmpty()
-            && repository_->updateFiles(stored.hash, incoming.fileList)) {
-            stored.fileList = incoming.fileList;
-            stored.files = incoming.fileList.size();
-        }
-
-        if (incoming.good > stored.good || incoming.bad > stored.bad) {
-            stored.good = qMax(stored.good, incoming.good);
-            stored.bad = qMax(stored.bad, incoming.bad);
-            repository_->update(stored);
-        }
+        mergeExisting(stored, incoming);
     }
 
     // 3. Everything genuinely new goes in as one multi-row write.
@@ -180,6 +148,49 @@ IndexingService::BatchResult IndexingService::insertBatch(
         result.inserted = repository_->addMany(fresh);
 
     return result;
+}
+
+void IndexingService::mergeExisting(domain::Torrent& stored, const domain::Torrent& incoming)
+{
+    bool rowChanged = false;
+
+    // Heal a metadata-only row with the file list the incoming copy carries.
+    // Keep the in-memory copy in step with what updateFiles() just wrote:
+    // update() below REPLACEs the whole row from this snapshot, so a stale
+    // files == 0 here would undo the backfill and leave the row claiming no
+    // files while the files table holds the list — which also re-triggers this
+    // branch (and its statistics delta) on every later merge.
+    if (stored.files == 0 && !incoming.fileList.isEmpty()
+        && repository_->updateFiles(stored.hash, incoming.fileList)) {
+        stored.fileList = incoming.fileList;
+        stored.files = incoming.fileList.size();
+
+        // A row stored without files was classified from its name alone, if at
+        // all. The files are the stronger signal, so an unresolved type gets
+        // another try; a type the row already has is left alone.
+        if (stored.contentType == domain::ContentType::Unknown) {
+            domain::ContentClassifier::classify(stored);
+            rowChanged = stored.contentType != domain::ContentType::Unknown;
+        }
+    }
+
+    if (stored.size <= 0 && incoming.size > 0) {
+        stored.size = incoming.size;
+        rowChanged = true;
+    }
+    if (stored.pieceLength <= 0 && incoming.pieceLength > 0) {
+        stored.pieceLength = incoming.pieceLength;
+        rowChanged = true;
+    }
+
+    if (incoming.good > stored.good || incoming.bad > stored.bad) {
+        stored.good = qMax(stored.good, incoming.good);
+        stored.bad = qMax(stored.bad, incoming.bad);
+        rowChanged = true;
+    }
+
+    if (rowChanged)
+        repository_->update(stored);
 }
 
 bool IndexingService::accepts(const domain::Torrent& torrent) const
