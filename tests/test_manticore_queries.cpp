@@ -66,6 +66,7 @@ private slots:
     void testBatchDuplicateHashCollapsesToOneRow();
     void testMigrationReKeysLegacyRows();
     void testUpdateAppliesAndKeepsSearchable();
+    void testMergeFillsMissingMetadata();
 
     void testExportImportRoundTrip();
     void testImportIsAMergeNotADuplicate();
@@ -593,6 +594,55 @@ void TestManticoreQueries::testUpdateAppliesAndKeepsSearchable()
     q.text = "zephyr";
     q.limit = 10;
     QCOMPARE(repo_->searchTorrents(q).size(), 1);
+}
+
+void TestManticoreQueries::testMergeFillsMissingMetadata()
+{
+    // A row that arrived with only a name: no files, no size, no type.
+    Torrent bare = makeTorrent(770005, "Backfill Sample quasar", ContentType::Unknown, 0, 0);
+    bare.files = 0;
+    bare.pieceLength = 0;
+    QVERIFY(repo_->add(bare));
+    QVERIFY(waitForTorrent(bare.hash));
+    QVERIFY(!repo_->hasMetadata(bare.hash));
+
+    const auto before = repo_->statistics();
+
+    // The same torrent fetched from the DHT with full metadata.
+    Torrent full = bare;
+    full.size = 5000;
+    full.pieceLength = 16384;
+    full.files = 2;
+    full.fileList = { File { "quasar/episode.mkv", 4900 }, File { "quasar/info.nfo", 100 } };
+    const auto result = indexing_->insert(full);
+    QVERIFY(result.success);
+    QVERIFY(result.alreadyExists);
+    QVERIFY(waitForFiles(bare.hash, 2));
+
+    const auto stored = repo_->get(bare.hash);
+    QVERIFY(stored.has_value());
+    QCOMPARE(stored->files, 2);
+    QCOMPARE(stored->size, (qint64)5000);
+    QCOMPARE(stored->pieceLength, 16384);
+    QCOMPARE(rats::domain::toId(stored->contentType), rats::domain::toId(ContentType::Video));
+    QVERIFY(repo_->hasMetadata(bare.hash));
+
+    const auto after = repo_->statistics();
+    QCOMPARE(after.torrents, before.torrents);
+    QCOMPARE(after.files, before.files + 2);
+    QCOMPARE(after.totalSize, before.totalSize + 5000);
+
+    // Values the row already has are never overwritten by a later copy.
+    Torrent other = full;
+    other.size = 1;
+    other.pieceLength = 1;
+    other.fileList = { File { "other.bin", 1 } };
+    QVERIFY(indexing_->insert(other).success);
+    const auto kept = repo_->get(bare.hash, /*includeFiles=*/true);
+    QVERIFY(kept.has_value());
+    QCOMPARE(kept->size, (qint64)5000);
+    QCOMPARE(kept->pieceLength, 16384);
+    QCOMPARE(kept->fileList.size(), 2);
 }
 
 // ============================================================================
