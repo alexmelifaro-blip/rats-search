@@ -118,8 +118,15 @@ void PeerApi::install()
 // Requests we answer
 // ============================================================================
 
+bool PeerApi::servingDisabled() const
+{
+    return app_->config() && app_->config()->collectOnly();
+}
+
 void PeerApi::handleSearchRequest(const QString& peerId, const QJsonObject& data)
 {
+    if (servingDisabled())
+        return;
     service::SearchService::Request req = parseSearchRequest(data);
     if (req.query.length() <= 2) {
         qInfo() << "[PeerApi] search query too short from" << shortId(peerId) << "- ignoring";
@@ -135,6 +142,8 @@ void PeerApi::handleSearchRequest(const QString& peerId, const QJsonObject& data
 
 void PeerApi::handleSearchFilesRequest(const QString& peerId, const QJsonObject& data)
 {
+    if (servingDisabled())
+        return;
     service::SearchService::Request req = parseSearchRequest(data);
     if (req.query.length() <= 2)
         return;
@@ -157,6 +166,8 @@ void PeerApi::handleSearchFilesRequest(const QString& peerId, const QJsonObject&
 
 void PeerApi::handleTopTorrentsRequest(const QString& peerId, const QJsonObject& data)
 {
+    if (servingDisabled())
+        return;
     QString type = data["type"].toString();
     QString time;
     int index = 0;
@@ -185,6 +196,8 @@ void PeerApi::handleTopTorrentsRequest(const QString& peerId, const QJsonObject&
 
 void PeerApi::handleTorrentRequest(const QString& peerId, const QJsonObject& data)
 {
+    if (servingDisabled())
+        return;
     const QString hash = data["hash"].toString();
     if (hash.length() != 40)
         return;
@@ -206,6 +219,8 @@ void PeerApi::handleTorrentRequest(const QString& peerId, const QJsonObject& dat
 
 void PeerApi::handleFeedRequest(const QString& peerId, const QJsonObject& data)
 {
+    if (servingDisabled())
+        return;
     Q_UNUSED(data);
     service::FeedService* feed = app_->feed();
     if (!feed)
@@ -224,6 +239,8 @@ void PeerApi::handleFeedRequest(const QString& peerId, const QJsonObject& data)
 
 void PeerApi::handleRandomTorrentsRequest(const QString& peerId, const QJsonObject& data)
 {
+    if (servingDisabled())
+        return;
     if (!app_->config() || !app_->config()->p2pReplicationServer()) {
         qInfo() << "[PeerApi] replication server disabled; ignoring randomTorrents from" << shortId(peerId);
         return;
