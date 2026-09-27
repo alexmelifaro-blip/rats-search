@@ -57,7 +57,7 @@ void ConfigStore::setDefaults()
 
         // P2P
         { "p2pConnections", 10 }, { "p2pReplication", true }, { "p2pReplicationServer", true },
-        { "databaseSharing", true }, { "databaseSnapshotMaxAgeHours", 6 }, { "databaseSnapshotMaxDriftPercent", 10 },
+        { "databaseSharing", true }, { "collectOnly", false }, { "databaseSnapshotMaxAgeHours", 6 }, { "databaseSnapshotMaxDriftPercent", 10 },
 
         // Indexer
         { "indexer", true }, { "trackers", true }, { "restApi", false }, { "upnp", true }, { "holePunch", true },
@@ -266,6 +266,15 @@ bool ConfigStore::databaseSharing() const
 void ConfigStore::setDatabaseSharing(bool enabled)
 {
     setValue("databaseSharing", enabled);
+}
+
+bool ConfigStore::collectOnly() const
+{
+    return config_["collectOnly"].toBool(false);
+}
+void ConfigStore::setCollectOnly(bool enabled)
+{
+    setValue("collectOnly", enabled);
 }
 
 int ConfigStore::databaseSnapshotMaxAgeHours() const
