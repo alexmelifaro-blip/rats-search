@@ -88,6 +88,15 @@ public:
     bool databaseSharing() const;
     void setDatabaseSharing(bool enabled);
 
+    // Collect-only mode: keep gathering torrents (DHT spider, our own searches
+    // and replication pulls, database downloads) but answer no data request from
+    // peers — no search, top, torrent, feed or replication replies and no
+    // database sharing. Each of those costs a query against the local index, and
+    // a remote search is a full-text query. Overrides p2pReplicationServer and
+    // databaseSharing without touching their stored values.
+    bool collectOnly() const;
+    void setCollectOnly(bool enabled);
+
     // When the dump we serve to peers is rebuilt. It is generated once and handed
     // to every peer that asks, so these two decide how stale a served index may be
     // — and, on the other side, how often this node spends a full export.
