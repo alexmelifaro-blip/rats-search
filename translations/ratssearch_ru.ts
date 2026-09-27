@@ -1703,6 +1703,14 @@ Do you want to install the update now?</source>
         <translation>Разрешить пирам скачивать мою базу данных целиком</translation>
     </message>
     <message>
+        <source>Collect only (don&apos;t serve data to peers)</source>
+        <translation>Только сбор (не отдавать данные другим)</translation>
+    </message>
+    <message>
+        <source>Keep collecting torrents, but leave every data request from other peers unanswered: searches, top lists, torrent details, feed, replication and whole-database downloads. Saves database load and upload. Overrides the two options above.</source>
+        <translation>Продолжать собирать торренты, но не отвечать ни на какие запросы данных от других пиров: поиск, топ, сведения о торрентах, лента, репликация и скачивание базы целиком. Снижает нагрузку на базу и исходящий трафик. Имеет приоритет над двумя настройками выше.</translation>
+    </message>
+    <message>
         <location filename="../src/ui/settingsdialog.cpp" line="269"/>
         <source>Answer a peer's request for a full copy of your index. Producing one exports the whole database and uploads it, which can take a long time and a lot of bandwidth. Turning this off also hides you from other users' peer lists.</source>
         <translation>Отвечать на запросы пиров о полной копии вашего индекса. Для этого вся база данных выгружается и передаётся, что может занять много времени и трафика. Если выключить, вы также перестанете отображаться в списках пиров у других пользователей.</translation>
