@@ -136,6 +136,10 @@ public:
     // before its file list was available. No-op (returns false) on empty input.
     bool updateFiles(const QString& hash, const QVector<domain::File>& files);
     bool mergeInfo(const QString& hash, const QJsonObject& info);
+    // Write size, piece length, content type/category and votes of a torrent read
+    // back from the index, in place (attributes only, no full-text reindex).
+    // `previousSize` is the stored size before the change, for the statistics.
+    bool updateMetadata(const domain::Torrent& torrent, qint64 previousSize);
     bool updateClassification(const QString& hash, domain::ContentType type, domain::ContentCategory category);
 
     // Snapshot of the counters. Safe from any thread: the bulk paths run on the
