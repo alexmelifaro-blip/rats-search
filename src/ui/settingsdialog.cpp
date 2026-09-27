@@ -276,6 +276,13 @@ QWidget* SettingsDialog::createNetworkTab()
            "Turning this off also hides you from other users' peer lists."));
     p2pLayout->addRow(databaseSharingCheck_);
 
+    collectOnlyCheck_ = new QCheckBox(tr("Collect only (don't serve data to peers)"));
+    collectOnlyCheck_->setToolTip(
+        tr("Keep collecting torrents, but leave every data request from other peers unanswered: "
+           "searches, top lists, torrent details, feed, replication and whole-database downloads. "
+           "Saves database load and upload. Overrides the two options above."));
+    p2pLayout->addRow(collectOnlyCheck_);
+
     tabLayout->addWidget(p2pGroup);
 
     // --- REST API ---
@@ -636,6 +643,7 @@ void SettingsDialog::loadSettings()
     p2pReplicationCheck_->setChecked(config_->p2pReplication());
     p2pReplicationServerCheck_->setChecked(config_->p2pReplicationServer());
     databaseSharingCheck_->setChecked(config_->databaseSharing());
+    collectOnlyCheck_->setChecked(config_->collectOnly());
 
     // Indexer
     indexerCheck_->setChecked(config_->indexerEnabled());
@@ -721,6 +729,7 @@ void SettingsDialog::saveSettings()
     config_->setP2pReplication(p2pReplicationCheck_->isChecked());
     config_->setP2pReplicationServer(p2pReplicationServerCheck_->isChecked());
     config_->setDatabaseSharing(databaseSharingCheck_->isChecked());
+    config_->setCollectOnly(collectOnlyCheck_->isChecked());
 
     // Save Indexer
     config_->setIndexerEnabled(indexerCheck_->isChecked());
