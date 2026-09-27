@@ -98,6 +98,7 @@ private:
     QCheckBox* p2pReplicationCheck_;
     QCheckBox* p2pReplicationServerCheck_;
     QCheckBox* databaseSharingCheck_;
+    QCheckBox* collectOnlyCheck_;
 
     // Indexer settings
     QCheckBox* indexerCheck_;
