@@ -57,6 +57,8 @@ private:
     void install();
 
     // Request handlers (we answer these) ---------------------------------------
+    // True in collect-only mode: data requests from peers are dropped unanswered.
+    bool servingDisabled() const;
     void handleSearchRequest(const QString& peerId, const QJsonObject& data);
     void handleSearchFilesRequest(const QString& peerId, const QJsonObject& data);
     void handleTopTorrentsRequest(const QString& peerId, const QJsonObject& data);
