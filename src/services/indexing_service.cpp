@@ -153,13 +153,12 @@ IndexingService::BatchResult IndexingService::insertBatch(
 void IndexingService::mergeExisting(domain::Torrent& stored, const domain::Torrent& incoming)
 {
     bool rowChanged = false;
+    const qint64 previousSize = stored.size;
+    const bool hadFiles = stored.files > 0;
 
     // Heal a metadata-only row with the file list the incoming copy carries.
-    // Keep the in-memory copy in step with what updateFiles() just wrote:
-    // update() below REPLACEs the whole row from this snapshot, so a stale
-    // files == 0 here would undo the backfill and leave the row claiming no
-    // files while the files table holds the list — which also re-triggers this
-    // branch (and its statistics delta) on every later merge.
+    // Keep the in-memory copy in step with what updateFiles() just wrote, so the
+    // caller sees the torrent as it now stands in the index.
     if (stored.files == 0 && !incoming.fileList.isEmpty()
         && repository_->updateFiles(stored.hash, incoming.fileList)) {
         stored.fileList = incoming.fileList;
@@ -190,7 +189,10 @@ void IndexingService::mergeExisting(domain::Torrent& stored, const domain::Torre
     }
 
     if (rowChanged)
-        repository_->update(stored);
+        repository_->updateMetadata(stored, previousSize);
+
+    if (!hadFiles && stored.files > 0)
+        qInfo() << "[Indexing] backfilled" << stored.hash.left(16) << stored.name.left(50) << "files:" << stored.files;
 }
 
 bool IndexingService::accepts(const domain::Torrent& torrent) const
