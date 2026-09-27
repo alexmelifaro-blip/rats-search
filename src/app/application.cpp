@@ -172,7 +172,7 @@ void Application::applyConfig()
     // One value drives both: what we actually do when asked, and what we tell
     // peers we would do. They must not disagree, or peers offer us to users who
     // will only ever get a refusal.
-    const bool shareDatabase = d_->options.shareDatabase.value_or(c->databaseSharing());
+    const bool shareDatabase = d_->options.shareDatabase.value_or(c->databaseSharing()) && !c->collectOnly();
     d_->databaseSync->setSharingEnabled(shareDatabase);
     d_->peers->setDatabaseSharing(shareDatabase);
     {
