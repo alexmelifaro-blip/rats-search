@@ -288,11 +288,7 @@ bool TorrentRepository::update(const Torrent& t)
     //
     // Every caller passes a Torrent it just read back with get(), so the row
     // rebuilt here is complete rather than a partial overwrite.
-    //
-    // The stored row is read back so a changed size (a metadata backfill) moves
-    // the totalSize counter with it. File counts are not tracked here: they only
-    // change through updateFiles(), which accounts for them itself.
-    const RowSlot slot = resolve(t.hash, /*withRow*/ true);
+    const RowSlot slot = resolve(t.hash);
     if (slot.id == 0)
         return false;
     if (slot.collided()) {
@@ -306,8 +302,6 @@ bool TorrentRepository::update(const Torrent& t)
 
     if (!db_->replace(kTorrents, values))
         return false;
-    if (slot.stored && slot.stored->size != t.size)
-        bumpStatistics(0, 0, t.size - slot.stored->size);
     emit torrentUpdated(t.hash);
     return true;
 }
@@ -780,6 +774,31 @@ bool TorrentRepository::mergeInfo(const QString& hash, const QJsonObject& info)
     for (auto it = info.constBegin(); it != info.constEnd(); ++it)
         merged[it.key()] = it.value();
     return db_->update(kTorrents, { { "info", merged } }, { { "id", existing->id } });
+}
+
+bool TorrentRepository::updateMetadata(const Torrent& t, qint64 previousSize)
+{
+    // Every column written here is a plain attribute, so Manticore rewrites it in
+    // place. update() instead REPLACEs the whole row: a delete plus a reinsert
+    // that re-tokenises the full-text fields and leaves a killed document for the
+    // background merge to reclaim — far too heavy for a per-torrent backfill on a
+    // multi-million-row index.
+    //
+    // `t` was read back from the index (resolve()/getMany()), which already
+    // refused a collided slot, so its derived id addresses this very torrent.
+    const qint64 id = rowIdFromHash(t.hash);
+    if (id == 0)
+        return false;
+    if (!db_->update(kTorrents,
+            { { "size", t.size }, { "piecelength", t.pieceLength }, { "contentType", domain::toId(t.contentType) },
+                { "contentCategory", domain::toId(t.contentCategory) }, { "good", t.good }, { "bad", t.bad } },
+            { { "id", id } }))
+        return false;
+
+    if (t.size != previousSize)
+        bumpStatistics(0, 0, t.size - previousSize);
+    emit torrentUpdated(t.hash);
+    return true;
 }
 
 bool TorrentRepository::updateClassification(const QString& hash, ContentType type, ContentCategory category)
