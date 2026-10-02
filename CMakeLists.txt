@@ -147,6 +147,7 @@ else()
         # Forward sanitizer options to librats
         set(RATS_ENABLE_ASAN ${RATS_ENABLE_ASAN} CACHE BOOL "" FORCE)
         set(RATS_ENABLE_TSAN ${RATS_ENABLE_TSAN} CACHE BOOL "" FORCE)
+        include(cmake/PatchLibrats.cmake)
         add_subdirectory(src/librats)
     else()
         message(FATAL_ERROR "librats not found. Please initialize git submodules: git submodule update --init --recursive")
