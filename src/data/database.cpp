@@ -11,6 +11,12 @@
 
 namespace rats::data {
 
+namespace {
+// Statements at least this slow are logged at INFO; the rest only at DEBUG. A
+// line per query would otherwise make up most of the log on a busy node.
+constexpr qint64 kSlowQueryMs = 1000;
+} // namespace
+
 Database::Database(Manticore* manticore, QObject* parent) : QObject(parent), manticore_(manticore) { }
 
 bool Database::isConnected() const
@@ -50,8 +56,15 @@ Database::Rows Database::query(const QString& sql, const QVariantList& params, b
 
     if (ok)
         *ok = true;
-    qInfo().noquote()
-        << QStringLiteral("Database: %1 rows in %2ms | %3").arg(rows.size()).arg(timer.elapsed()).arg(sql.left(120));
+    const qint64 elapsed = timer.elapsed();
+    if (elapsed >= kSlowQueryMs)
+        qInfo().noquote() << QStringLiteral("Database: slow query, %1 rows in %2ms | %3")
+                                 .arg(rows.size())
+                                 .arg(elapsed)
+                                 .arg(sql.left(120));
+    else
+        qDebug().noquote()
+            << QStringLiteral("Database: %1 rows in %2ms | %3").arg(rows.size()).arg(elapsed).arg(sql.left(120));
     return rows;
 }
 
@@ -71,10 +84,17 @@ bool Database::runWrite(const QString& sqlText, const char* op, const QString& t
         return false;
     }
 
-    qInfo().noquote() << QStringLiteral("Database: %1 %2 | %3ms | affected %4")
-                             .arg(QString::fromLatin1(op), table)
-                             .arg(timer.elapsed())
-                             .arg(q.numRowsAffected());
+    const qint64 elapsed = timer.elapsed();
+    if (elapsed >= kSlowQueryMs)
+        qInfo().noquote() << QStringLiteral("Database: slow %1 %2 | %3ms | affected %4")
+                                 .arg(QString::fromLatin1(op), table)
+                                 .arg(elapsed)
+                                 .arg(q.numRowsAffected());
+    else
+        qDebug().noquote() << QStringLiteral("Database: %1 %2 | %3ms | affected %4")
+                                  .arg(QString::fromLatin1(op), table)
+                                  .arg(elapsed)
+                                  .arg(q.numRowsAffected());
     return true;
 }
 
