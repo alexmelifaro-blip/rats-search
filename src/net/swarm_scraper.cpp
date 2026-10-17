@@ -1,6 +1,8 @@
 #include "net/swarm_scraper.h"
 
 #include <QDebug>
+#include <QMutex>
+#include <QStringList>
 
 #include <atomic>
 #include <functional>
@@ -100,12 +102,9 @@ AnnounceResult announceOne(
 // Constructor / Destructor
 // ============================================================================
 
-SwarmScraper::SwarmScraper(QObject* parent) : QObject(parent), activeRequests_(0), queueTimer_(nullptr)
+SwarmScraper::SwarmScraper(QObject* parent)
+    : QObject(parent), queue_({ kMaxConcurrent, kInteractiveSlots, kMaxQueued, kCooldownSecs, kRetrySecs })
 {
-    queueTimer_ = new QTimer(this);
-    queueTimer_->setInterval(kQueuePollIntervalMs);
-    connect(queueTimer_, &QTimer::timeout, this, &SwarmScraper::processQueue);
-
     // Sized to run a hash's trackers concurrently (plus some cross-hash overlap).
     // The tasks are blocking UDP announces (I/O-bound, not CPU-bound), so a cap
     // above the core count is fine; it just bounds how many sockets wait at once.
@@ -120,13 +119,7 @@ SwarmScraper::~SwarmScraper()
 void SwarmScraper::stop()
 {
     stopping_.store(true);
-    if (queueTimer_) {
-        queueTimer_->stop();
-    }
-    {
-        QMutexLocker locker(&queueMutex_);
-        pendingQueue_.clear();
-    }
+    queue_.clear();
     // Drop tasks that have not started yet, then wait for the running announces to
     // finish. In-flight tasks check stopping_ before each announce, so they bail
     // after at most the announce already in progress rather than walking every
@@ -139,100 +132,35 @@ void SwarmScraper::stop()
 // Public Methods
 // ============================================================================
 
-void SwarmScraper::requestScrape(const QString& infoHash, const QStringList& trackers)
+bool SwarmScraper::requestScrape(const QString& infoHash, ScrapePriority priority)
 {
     if (stopping_.load()) {
-        return; // shutting down — accept no new work
+        return false; // shutting down — accept no new work
     }
 
     if (infoHash.length() != kInfoHashHexLength) {
         qWarning() << "SwarmScraper: ignoring invalid info-hash" << infoHash;
-        return;
+        return false;
     }
 
-    const QStringList effectiveTrackers = trackers.isEmpty() ? kDefaultTrackers : trackers;
-    if (effectiveTrackers.isEmpty()) {
-        return;
+    switch (queue_.submit(infoHash, priority)) {
+    case ScrapeQueue::Outcome::Started:
+        startScrape(infoHash);
+        return true;
+    case ScrapeQueue::Outcome::Queued:
+    case ScrapeQueue::Outcome::Running:
+        return true;
+    case ScrapeQueue::Outcome::CoolingDown:
+        return false;
     }
-
-    // Deduplicate against the per-hash cooldown, and opportunistically prune
-    // stale entries so recentChecks_ stays bounded regardless of uptime.
-    {
-        QMutexLocker locker(&recentChecksMutex_);
-        const QDateTime now = QDateTime::currentDateTime();
-
-        if (!lastPrune_.isValid() || lastPrune_.secsTo(now) >= kCheckIntervalSecs) {
-            pruneStaleChecks(now);
-            lastPrune_ = now;
-        }
-
-        auto it = recentChecks_.constFind(infoHash);
-        if (it != recentChecks_.constEnd() && it.value().secsTo(now) < kCheckIntervalSecs) {
-            qDebug() << "SwarmScraper: skipping" << infoHash.left(8) << "- checked" << it.value().secsTo(now)
-                     << "secs ago";
-            return;
-        }
-        recentChecks_[infoHash] = now; // mark as being checked
-    }
-
-    // Start immediately if under the concurrency cap, otherwise queue.
-    {
-        QMutexLocker locker(&queueMutex_);
-        if (activeRequests_ >= kMaxConcurrent) {
-            pendingQueue_.enqueue({ infoHash, effectiveTrackers });
-            qDebug() << "SwarmScraper: queued" << infoHash.left(8) << "- active:" << activeRequests_
-                     << "queued:" << pendingQueue_.size();
-            if (!queueTimer_->isActive()) {
-                queueTimer_->start();
-            }
-            return;
-        }
-        activeRequests_++;
-    }
-
-    startScrape(infoHash, effectiveTrackers);
+    return false;
 }
 
 // ============================================================================
 // Private Methods
 // ============================================================================
 
-void SwarmScraper::pruneStaleChecks(const QDateTime& now)
-{
-    for (auto it = recentChecks_.begin(); it != recentChecks_.end();) {
-        if (it.value().secsTo(now) >= kCheckIntervalSecs) {
-            it = recentChecks_.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
-void SwarmScraper::processQueue()
-{
-    if (stopping_.load()) {
-        return;
-    }
-
-    QMutexLocker locker(&queueMutex_);
-
-    // Drain as many queued requests as the concurrency cap allows.
-    while (!pendingQueue_.isEmpty() && activeRequests_ < kMaxConcurrent) {
-        PendingRequest req = pendingQueue_.dequeue();
-        activeRequests_++;
-
-        // Release the lock while kicking off the (thread-pool) scrape.
-        locker.unlock();
-        startScrape(req.infoHash, req.trackers);
-        locker.relock();
-    }
-
-    if (pendingQueue_.isEmpty()) {
-        queueTimer_->stop();
-    }
-}
-
-void SwarmScraper::startScrape(const QString& infoHash, const QStringList& trackers)
+void SwarmScraper::startScrape(const QString& infoHash)
 {
     const std::string hashStd = infoHash.toStdString();
     const int timeout = kTimeoutMs;
@@ -243,9 +171,9 @@ void SwarmScraper::startScrape(const QString& infoHash, const QStringList& track
     // trackers × timeout. They merge into a shared best-result; the last one to
     // finish reports back on this object's thread and frees the hash's slot.
     auto state = std::make_shared<ScrapeState>();
-    state->remaining.store(static_cast<int>(trackers.size()));
+    state->remaining.store(static_cast<int>(kDefaultTrackers.size()));
 
-    for (const QString& trackerUrl : trackers) {
+    for (const QString& trackerUrl : kDefaultTrackers) {
         const std::string url = trackerUrl.toStdString();
         threadPool_.start([this, infoHash, state, url, hashStd, timeout]() {
             // Skip the (blocking) announce entirely once shutdown starts, so a
@@ -275,22 +203,25 @@ void SwarmScraper::startScrape(const QString& infoHash, const QStringList& track
             QMetaObject::invokeMethod(
                 this,
                 [this, infoHash, best]() {
-                    {
-                        QMutexLocker locker(&queueMutex_);
-                        if (activeRequests_ > 0) {
-                            activeRequests_--;
-                        }
-                    }
-
-                    if (best.success) {
-                        emit scraped(infoHash, best.seeders, best.leechers, best.completed);
-                    }
-
-                    // Give any queued requests a chance to start now that a slot freed.
-                    processQueue();
+                    onScrapeFinished(infoHash, best.success, best.seeders, best.leechers, best.completed);
                 },
                 Qt::QueuedConnection);
         });
+    }
+}
+
+void SwarmScraper::onScrapeFinished(const QString& infoHash, bool success, int seeders, int leechers, int completed)
+{
+    const QStringList next = queue_.finish(infoHash, success);
+
+    if (success) {
+        emit scraped(infoHash, seeders, leechers, completed);
+    }
+
+    if (!stopping_.load()) {
+        for (const QString& hash : next) {
+            startScrape(hash);
+        }
     }
 }
 

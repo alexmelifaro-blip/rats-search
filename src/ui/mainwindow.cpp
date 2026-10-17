@@ -119,10 +119,8 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
         }
     }
 
-    loadSettings();
-
     setWindowTitle(tr("Rats Search %1 - BitTorrent P2P Search Engine").arg(RATSSEARCH_VERSION_STRING));
-    resize(1400, 900);
+    resize(1400, 900); // default size; loadSettings() replaces it with the saved geometry
     setWindowIcon(QIcon(":/images/icon.png"));
     setAcceptDrops(true); // drag & drop .torrent files
 
@@ -131,6 +129,10 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     setupMenuBar();
     setupStatusBar();
     setupSystemTray();
+
+    // After the widgets it restores exist, and before connectSignals(): restoring
+    // the search combos and filters must not fire a search.
+    loadSettings();
 
     // Hand the running application to every tab/panel, then wire the signals.
     wireWidgets();
@@ -170,8 +172,16 @@ MainWindow::~MainWindow()
 
 void MainWindow::applyTheme(bool darkMode)
 {
-    rats::ui::Theme::instance().setDark(darkMode);
-    setStyleSheet(rats::ui::Theme::instance().styleSheet());
+    rats::ui::Theme& theme = rats::ui::Theme::instance();
+    if (rats::app::ConfigStore* config = app_->config()) {
+        theme.setFont(config->uiFontFamily(), config->uiFontScale());
+    }
+    theme.setDark(darkMode);
+    setStyleSheet(theme.styleSheet());
+    // The tray menu is a top-level window that copied the sheet once.
+    if (trayMenu) {
+        trayMenu->setStyleSheet(styleSheet());
+    }
 }
 
 void MainWindow::setupUi()
@@ -324,7 +334,7 @@ void MainWindow::setupUi()
     detailsPanel->hide();
 
     mainSplitter->addWidget(detailsPanel);
-    mainSplitter->setSizes({ 900, 350 });
+    mainSplitter->setSizes(detailsSplitterSizes_);
 
     verticalSplitter->addWidget(mainSplitter);
 
@@ -335,6 +345,18 @@ void MainWindow::setupUi()
     verticalSplitter->addWidget(filesWidget);
 
     mainLayout->addWidget(verticalSplitter, 1);
+
+    // Remember where the user drags the splitters. A pane collapsed to 0 is not
+    // remembered: restored at 0 it would look like the panel had disappeared.
+    auto rememberSizes = [](QSplitter* splitter, QList<int>& sizes) {
+        const QList<int> current = splitter->sizes();
+        if (!current.contains(0))
+            sizes = current;
+    };
+    connect(mainSplitter, &QSplitter::splitterMoved, this,
+        [this, rememberSizes](int, int) { rememberSizes(mainSplitter, detailsSplitterSizes_); });
+    connect(verticalSplitter, &QSplitter::splitterMoved, this,
+        [this, rememberSizes](int, int) { rememberSizes(verticalSplitter, filesSplitterSizes_); });
 }
 
 void MainWindow::setupMenuBar()
@@ -517,8 +539,15 @@ void MainWindow::connectSignals()
 
     // Immediate settings application.
     // Language changes are handled by Application, which owns the translators.
-    if (app_->config())
-        connect(app_->config(), &rats::app::ConfigStore::darkModeChanged, this, &MainWindow::onDarkModeChanged);
+    if (rats::app::ConfigStore* config = app_->config()) {
+        connect(config, &rats::app::ConfigStore::darkModeChanged, this, &MainWindow::onDarkModeChanged);
+        connect(config, &rats::app::ConfigStore::configChanged, this, [this, config](const QStringList& keys) {
+            if (keys.contains(QStringLiteral("uiFontFamily")) || keys.contains(QStringLiteral("uiFontScale"))) {
+                qInfo() << "Interface font changed to" << config->uiFontFamily() << config->uiFontScale() << "%";
+                applyTheme(config->darkMode());
+            }
+        });
+    }
 }
 
 void MainWindow::connectSearchSignals()
@@ -838,7 +867,7 @@ void MainWindow::connectPeerSignals()
             if (!t.fileList.isEmpty()) {
                 filesWidget->setFiles(hash, t.name, t.fileList);
                 filesWidget->show();
-                verticalSplitter->setSizes({ 600, 200 });
+                verticalSplitter->setSizes(filesSplitterSizes_);
             }
         });
 }
@@ -1154,12 +1183,20 @@ void MainWindow::closeEvent(QCloseEvent* event)
         return;
     }
 
-    // Confirm exit.
-    QMessageBox::StandardButton reply = QMessageBox::question(
-        this, tr("Confirm Exit"), tr("Are you sure you want to exit Rats Search?"), QMessageBox::Yes | QMessageBox::No);
-    if (reply == QMessageBox::No) {
-        event->ignore();
-        return;
+    // Confirm exit, unless the user switched the prompt off (here via "Don't ask
+    // again", or in Settings).
+    if (!config || config->confirmExit()) {
+        QMessageBox box(QMessageBox::Question, tr("Confirm Exit"), tr("Are you sure you want to exit Rats Search?"),
+            QMessageBox::Yes | QMessageBox::No, this);
+        box.setDefaultButton(QMessageBox::Yes);
+        QCheckBox* dontAsk = new QCheckBox(tr("Don't ask again"), &box);
+        box.setCheckBox(dontAsk);
+        if (box.exec() != QMessageBox::Yes) {
+            event->ignore();
+            return;
+        }
+        if (config && dontAsk->isChecked())
+            config->setConfirmExit(false);
     }
 
     // Persist UI state; service shutdown (DB, P2P, session) is
@@ -1410,7 +1447,7 @@ void MainWindow::showTorrentDetails(const Torrent& torrent)
     // handler.
     filesWidget->setTorrent(torrent);
     filesWidget->show();
-    verticalSplitter->setSizes({ 600, 200 });
+    verticalSplitter->setSizes(filesSplitterSizes_);
 }
 
 void MainWindow::openMagnetLink(const Torrent& torrent)
@@ -2301,16 +2338,101 @@ void MainWindow::changeEvent(QEvent* event)
 }
 
 // ============================================================================
-// Settings persistence (window geometry only; config is owned by ConfigStore)
+// Settings persistence. Window/UI state lives in QSettings: it is per-machine
+// view state, not a setting — config is owned by ConfigStore.
 // ============================================================================
+
+namespace {
+// Section widths only, not QHeaderView::saveState(): that blob also carries the
+// sort indicator, and restoring it would show a sort arrow the model never
+// applied (TorrentTableWidget deliberately starts with none). The stretched
+// last section is sized by the view, so its stored width is skipped.
+void saveColumnWidths(QSettings& settings, const QString& key, const QHeaderView* header)
+{
+    QVariantList widths;
+    for (int i = 0; i < header->count(); ++i)
+        widths << header->sectionSize(i);
+    settings.setValue(key, widths);
+}
+
+void restoreColumnWidths(const QSettings& settings, const QString& key, QHeaderView* header)
+{
+    const QVariantList widths = settings.value(key).toList();
+    const int count = header->stretchLastSection() ? header->count() - 1 : header->count();
+    for (int i = 0; i < widths.size() && i < count; ++i) {
+        const int width = widths.at(i).toInt();
+        if (width > 0)
+            header->resizeSection(i, width);
+    }
+}
+
+QList<int> toSizes(const QVariant& value)
+{
+    QList<int> sizes;
+    for (const QVariant& v : value.toList())
+        sizes << v.toInt();
+    return sizes;
+}
+
+QVariantList fromSizes(const QList<int>& sizes)
+{
+    QVariantList list;
+    for (int size : sizes)
+        list << size;
+    return list;
+}
+
+// Combos are stored by item data, not index, so reordering or adding items
+// cannot silently select a different entry. The INI and registry backends hand
+// numbers back as strings, which findData() would never match against the
+// size units' qint64, so the value is converted to the items' type first.
+void restoreComboData(const QSettings& settings, const QString& key, QComboBox* combo)
+{
+    if (!settings.contains(key) || combo->count() == 0)
+        return;
+    QVariant value = settings.value(key);
+    if (!value.convert(combo->itemData(0).metaType()))
+        return;
+    const int index = combo->findData(value);
+    if (index >= 0)
+        combo->setCurrentIndex(index);
+}
+} // namespace
 
 void MainWindow::loadSettings()
 {
-    QSettings windowSettings("RatsSearch", "RatsSearch");
-    if (windowSettings.contains("window/geometry"))
-        restoreGeometry(windowSettings.value("window/geometry").toByteArray());
-    if (windowSettings.contains("window/state"))
-        restoreState(windowSettings.value("window/state").toByteArray());
+    QSettings settings("RatsSearch", "RatsSearch");
+    if (settings.contains("window/geometry"))
+        restoreGeometry(settings.value("window/geometry").toByteArray());
+    if (settings.contains("window/state"))
+        restoreState(settings.value("window/state").toByteArray());
+
+    const QList<int> detailsSizes = toSizes(settings.value("window/detailsSplitter"));
+    if (detailsSizes.size() == 2 && !detailsSizes.contains(0)) {
+        detailsSplitterSizes_ = detailsSizes;
+        mainSplitter->setSizes(detailsSplitterSizes_);
+    }
+    // Applied whenever the files panel is shown.
+    const QList<int> filesSizes = toSizes(settings.value("window/filesSplitter"));
+    if (filesSizes.size() == 2 && !filesSizes.contains(0))
+        filesSplitterSizes_ = filesSizes;
+
+    restoreColumnWidths(settings, "columns/search", resultsTableView->horizontalHeader());
+    restoreColumnWidths(settings, "columns/top", topTorrentsWidget->columnHeader());
+    restoreColumnWidths(settings, "columns/feed", feedWidget->columnHeader());
+    restoreColumnWidths(settings, "columns/favorites", favoritesWidget->columnHeader());
+
+    restoreComboData(settings, "search/type", typeComboBox);
+    restoreComboData(settings, "search/sort", sortComboBox);
+    // Units before values, so the max-below-min correction in
+    // updateSearchFiltersButton() compares the real byte counts.
+    restoreComboData(settings, "search/sizeMinUnit", sizeMinUnit);
+    restoreComboData(settings, "search/sizeMaxUnit", sizeMaxUnit);
+    sizeMinSpin->setValue(settings.value("search/sizeMin", 0.0).toDouble());
+    sizeMaxSpin->setValue(settings.value("search/sizeMax", 0.0).toDouble());
+    filesMinSpin->setValue(settings.value("search/filesMin", 0).toInt());
+    filesMaxSpin->setValue(settings.value("search/filesMax", 0).toInt());
+
     qInfo() << "Window settings loaded";
 }
 
@@ -2319,10 +2441,31 @@ void MainWindow::saveSettings()
     if (app_ && app_->config())
         app_->config()->save();
 
-    QSettings windowSettings("RatsSearch", "RatsSearch");
-    windowSettings.setValue("window/geometry", saveGeometry());
-    windowSettings.setValue("window/state", saveState());
-    windowSettings.sync();
+    QSettings settings("RatsSearch", "RatsSearch");
+    settings.setValue("window/geometry", saveGeometry());
+    settings.setValue("window/state", saveState());
+
+    // The constructor bails out before setupUi() when the agreement is declined,
+    // and the destructor still lands here.
+    if (resultsTableView) {
+        settings.setValue("window/detailsSplitter", fromSizes(detailsSplitterSizes_));
+        settings.setValue("window/filesSplitter", fromSizes(filesSplitterSizes_));
+
+        saveColumnWidths(settings, "columns/search", resultsTableView->horizontalHeader());
+        saveColumnWidths(settings, "columns/top", topTorrentsWidget->columnHeader());
+        saveColumnWidths(settings, "columns/feed", feedWidget->columnHeader());
+        saveColumnWidths(settings, "columns/favorites", favoritesWidget->columnHeader());
+
+        settings.setValue("search/type", typeComboBox->currentData());
+        settings.setValue("search/sort", sortComboBox->currentData());
+        settings.setValue("search/sizeMin", sizeMinSpin->value());
+        settings.setValue("search/sizeMinUnit", sizeMinUnit->currentData());
+        settings.setValue("search/sizeMax", sizeMaxSpin->value());
+        settings.setValue("search/sizeMaxUnit", sizeMaxUnit->currentData());
+        settings.setValue("search/filesMin", filesMinSpin->value());
+        settings.setValue("search/filesMax", filesMaxSpin->value());
+    }
+    settings.sync();
 
     qInfo() << "Settings saved";
 }
@@ -2576,6 +2719,9 @@ bool MainWindow::showAgreementDialog()
     dialog.setModal(true);
 
     // Shown before MainWindow is styled, so it cannot inherit a sheet.
+    if (config) {
+        rats::ui::Theme::instance().setFont(config->uiFontFamily(), config->uiFontScale());
+    }
     rats::ui::Theme::instance().setDark(config && config->darkMode());
     dialog.setStyleSheet(rats::ui::Theme::instance().styleSheet());
 

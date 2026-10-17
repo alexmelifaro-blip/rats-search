@@ -5,6 +5,7 @@
 #include <QVector>
 #include <QWidget>
 
+class QHeaderView;
 class QTableView;
 class QVBoxLayout;
 class QMenu;
@@ -44,6 +45,11 @@ public:
      * @brief Currently selected torrent (invalid Torrent if none selected).
      */
     rats::domain::Torrent selectedTorrent() const;
+
+    /**
+     * @brief The table's column header, so the owner can persist column widths.
+     */
+    QHeaderView* columnHeader() const;
 
 signals:
     void torrentSelected(const rats::domain::Torrent& torrent);

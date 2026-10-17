@@ -12,6 +12,7 @@ TrackerService::TrackerService(net::SwarmScraper* swarmScraper, net::TrackerSite
 {
     connect(swarmScraper_, &net::SwarmScraper::scraped, this, &TrackerService::onCountsScraped);
     connect(siteScraper_, &net::TrackerSiteScraper::scraped, this, &TrackerService::onInfoScraped);
+    connect(siteScraper_, &net::TrackerSiteScraper::finished, this, &TrackerService::infoChecked);
 }
 
 void TrackerService::setCountScrapingEnabled(bool enabled)
@@ -34,22 +35,20 @@ void TrackerService::stop()
     siteScraper_->stop();
 }
 
-void TrackerService::checkCounts(const QString& hash)
+bool TrackerService::checkCounts(const QString& hash, net::ScrapePriority priority)
 {
-    if (countEnabled_)
-        swarmScraper_->requestScrape(hash);
+    return countEnabled_ && swarmScraper_->requestScrape(hash, priority);
 }
 
-void TrackerService::checkInfo(const QString& hash, const QString& name)
+bool TrackerService::checkInfo(const QString& hash, net::ScrapePriority priority)
 {
-    if (infoEnabled_)
-        siteScraper_->scrape(hash, name);
+    return infoEnabled_ && siteScraper_->scrape(hash, priority);
 }
 
 void TrackerService::onTorrentIndexed(const domain::Torrent& torrent)
 {
-    checkCounts(torrent.hash);
-    checkInfo(torrent.hash, torrent.name);
+    checkCounts(torrent.hash, net::ScrapePriority::Background);
+    checkInfo(torrent.hash, net::ScrapePriority::Background);
 }
 
 void TrackerService::onCountsScraped(const QString& hash, int seeders, int leechers, int completed)

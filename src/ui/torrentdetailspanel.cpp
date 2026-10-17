@@ -416,6 +416,10 @@ void TorrentDetailsPanel::setApplication(rats::app::Application* app)
     if (auto* repo = app_->torrents()) {
         connect(repo, &rats::data::TorrentRepository::torrentUpdated, this, &TorrentDetailsPanel::onTorrentUpdated);
     }
+    if (auto* trackers = app_->trackers()) {
+        connect(
+            trackers, &rats::service::TrackerService::infoChecked, this, &TorrentDetailsPanel::onTrackerInfoChecked);
+    }
     if (auto* fav = app_->favorites()) {
         connect(fav, &rats::app::FavoritesStore::favoritesChanged, this, &TorrentDetailsPanel::updateFavoriteButton);
     }
@@ -480,7 +484,7 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
     }
 
     // Show existing tracker info from database if available
-    if (!torrent.info.isEmpty() && torrent.info.contains("trackers")) {
+    if (hasTrackerInfo(torrent.info)) {
         updateTrackerInfoDisplay(torrent.info);
     } else {
         // Reset tracker info UI
@@ -788,8 +792,8 @@ void TorrentDetailsPanel::updateTrackerStats(int seeders, int leechers, int comp
 // ============================================================================
 // Tracker refresh — delegated to TrackerService. Results are persisted to the
 // repository, which emits torrentUpdated(hash); onTorrentUpdated() then reloads
-// the row and refreshes stats + scraped info. Rate limiting lives in the
-// service.
+// the row and refreshes stats + scraped info. Scheduling and rate limiting live
+// in the scrapers.
 // ============================================================================
 
 void TorrentDetailsPanel::requestTrackerRefresh()
@@ -807,15 +811,28 @@ void TorrentDetailsPanel::requestTrackerRefresh()
     trackers->checkCounts(currentHash_);
 
     // Scrape tracker websites for descriptions/posters when we don't already
-    // have them. Show the loading indicator while the scrape runs.
-    bool haveInfo = false;
-    if (!currentTorrent_.info.isEmpty() && currentTorrent_.info.contains("trackers")) {
-        haveInfo = !currentTorrent_.info["trackers"].toArray().isEmpty();
-    }
-    if (!haveInfo) {
+    // have them. The loading indicator shows only while a scrape is actually
+    // pending — infoChecked() is guaranteed to follow, and onTrackerInfoChecked()
+    // takes it down whether or not anything was found.
+    if (!hasTrackerInfo(currentTorrent_.info) && trackers->checkInfo(currentHash_)) {
         trackerInfoWidget_->show();
         trackerInfoLoadingLabel_->show();
-        trackers->checkInfo(currentHash_, currentTorrent_.name);
+    }
+}
+
+bool TorrentDetailsPanel::hasTrackerInfo(const QJsonObject& info)
+{
+    return !info.value("trackers").toArray().isEmpty();
+}
+
+void TorrentDetailsPanel::onTrackerInfoChecked(const QString& hash)
+{
+    if (hash != currentHash_) {
+        return;
+    }
+    trackerInfoLoadingLabel_->hide();
+    if (!hasTrackerInfo(currentTorrent_.info)) {
+        trackerInfoWidget_->hide(); // nothing found: the section has nothing to show
     }
 }
 
@@ -833,10 +850,11 @@ void TorrentDetailsPanel::onTorrentUpdated(const QString& hash)
     // Refresh swarm counts.
     updateTrackerStats(updated->seeders, updated->leechers, updated->completed);
 
-    // Refresh scraped tracker info (poster/description/links).
+    // Refresh scraped tracker info (poster/description/links). A counts-only
+    // update leaves the loading indicator alone: the website scrape may still be
+    // running, and onTrackerInfoChecked() is what ends the wait.
     currentTorrent_.info = updated->info;
-    trackerInfoLoadingLabel_->hide();
-    if (!updated->info.isEmpty() && updated->info.contains("trackers")) {
+    if (hasTrackerInfo(updated->info)) {
         updateTrackerInfoDisplay(updated->info);
     }
 }

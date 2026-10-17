@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QEvent>
 #include <QFileDialog>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -149,6 +150,25 @@ QWidget* SettingsDialog::createGeneralTab()
     darkModeCheck_ = new QCheckBox(tr("Dark mode"));
     appearanceLayout->addRow(darkModeCheck_);
 
+    // An empty family means the theme's own font stack, which picks a sensible
+    // font on every platform — so that, not a concrete family, is the default.
+    fontFamilyCombo_ = new QComboBox();
+    fontFamilyCombo_->addItem(tr("Default"), QString());
+    for (const QString& family : QFontDatabase::families()) {
+        if (!QFontDatabase::isPrivateFamily(family)) {
+            fontFamilyCombo_->addItem(family, family);
+        }
+    }
+    fontFamilyCombo_->setToolTip(tr("Font used throughout the interface"));
+    appearanceLayout->addRow(tr("Font:"), fontFamilyCombo_);
+
+    fontScaleSpin_ = new QSpinBox();
+    fontScaleSpin_->setRange(rats::app::ConfigStore::kMinUiFontScale, rats::app::ConfigStore::kMaxUiFontScale);
+    fontScaleSpin_->setSingleStep(10);
+    fontScaleSpin_->setSuffix(QStringLiteral("%"));
+    fontScaleSpin_->setToolTip(tr("Size of the interface text relative to the default"));
+    appearanceLayout->addRow(tr("Font size:"), fontScaleSpin_);
+
     tabLayout->addWidget(appearanceGroup);
 
     // --- Startup & Tray ---
@@ -168,6 +188,9 @@ QWidget* SettingsDialog::createGeneralTab()
 
     closeToTrayCheck_ = new QCheckBox(tr("Hide to tray on close"));
     startupLayout->addRow(closeToTrayCheck_);
+
+    confirmExitCheck_ = new QCheckBox(tr("Ask for confirmation before exiting"));
+    startupLayout->addRow(confirmExitCheck_);
 
     // When autostart is enabled, suggest starting minimized
     connect(autoStartCheck_, &QCheckBox::toggled, this, [this](bool checked) {
@@ -626,10 +649,21 @@ void SettingsDialog::loadSettings()
         }
     }
     darkModeCheck_->setChecked(config_->darkMode());
+    const QString fontFamily = config_->uiFontFamily();
+    int fontIndex = fontFamily.isEmpty() ? 0 : fontFamilyCombo_->findData(fontFamily);
+    if (fontIndex < 0) {
+        // Not installed here (a config carried over from another machine): keep
+        // it selectable, so saving the dialog does not quietly drop it.
+        fontFamilyCombo_->addItem(fontFamily, fontFamily);
+        fontIndex = fontFamilyCombo_->count() - 1;
+    }
+    fontFamilyCombo_->setCurrentIndex(fontIndex);
+    fontScaleSpin_->setValue(config_->uiFontScale());
     autoStartCheck_->setChecked(AutoStartManager::isEnabled());
     startMinimizedCheck_->setChecked(config_->startMinimized());
     minimizeToTrayCheck_->setChecked(config_->trayOnMinimize());
     closeToTrayCheck_->setChecked(config_->trayOnClose());
+    confirmExitCheck_->setChecked(config_->confirmExit());
     checkUpdatesCheck_->setChecked(config_->checkUpdatesOnStartup());
     searchHistoryCheck_->setChecked(config_->searchHistoryEnabled());
     updateSearchHistoryButton();
@@ -705,9 +739,12 @@ void SettingsDialog::saveSettings()
     // Save General
     config_->setLanguage(languageCombo_->currentData().toString());
     config_->setDarkMode(darkModeCheck_->isChecked());
+    config_->setUiFontFamily(fontFamilyCombo_->currentData().toString());
+    config_->setUiFontScale(fontScaleSpin_->value());
     config_->setStartMinimized(startMinimizedCheck_->isChecked());
     config_->setTrayOnMinimize(minimizeToTrayCheck_->isChecked());
     config_->setTrayOnClose(closeToTrayCheck_->isChecked());
+    config_->setConfirmExit(confirmExitCheck_->isChecked());
     config_->setCheckUpdatesOnStartup(checkUpdatesCheck_->isChecked());
     config_->setSearchHistoryEnabled(searchHistoryCheck_->isChecked());
 

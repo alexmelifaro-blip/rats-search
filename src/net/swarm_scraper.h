@@ -1,15 +1,11 @@
 #ifndef RATS_NET_SWARM_SCRAPER_H
 #define RATS_NET_SWARM_SCRAPER_H
 
-#include <QDateTime>
-#include <QHash>
-#include <QMutex>
+#include "net/scrape_queue.h"
+
 #include <QObject>
-#include <QQueue>
 #include <QString>
-#include <QStringList>
 #include <QThreadPool>
-#include <QTimer>
 
 #include <atomic>
 
@@ -23,10 +19,9 @@ namespace rats::net {
 // never touches the database. A higher-level service listens for scraped() and
 // persists the values.
 //
-// Scrapes run on the Qt thread pool via QtConcurrent and are governed by:
-//   - a concurrency cap (kMaxConcurrent) with a FIFO queue for overflow,
-//   - a per-hash cooldown (kCheckIntervalSecs) so the same torrent is not
-//     re-scraped in a tight loop.
+// The blocking announces run on a private thread pool; which hashes run, wait or
+// are skipped is decided by a ScrapeQueue (concurrency cap, interactive priority,
+// bounded backlog, per-hash cooldown). Lives on one thread: call it from there.
 class SwarmScraper : public QObject {
     Q_OBJECT
 
@@ -34,11 +29,12 @@ public:
     explicit SwarmScraper(QObject* parent = nullptr);
     ~SwarmScraper() override;
 
-    // Request a scrape for a torrent. `infoHash` must be a 40-char hex string.
-    // If `trackers` is empty the built-in default tracker list is used. The call
-    // is non-blocking: on success scraped() is emitted later on this object's
-    // thread. Duplicate requests within the cooldown window are dropped.
-    void requestScrape(const QString& infoHash, const QStringList& trackers = QStringList());
+    // Request a scrape of the built-in tracker list for a torrent. `infoHash`
+    // must be a 40-char hex string. Non-blocking: on success scraped() is emitted
+    // later on this object's thread. Returns whether a scrape is now running or
+    // queued for the hash — false when it was answered recently (cooldown), is
+    // invalid, or the scraper is stopping.
+    bool requestScrape(const QString& infoHash, ScrapePriority priority = ScrapePriority::Background);
 
     // Stop scraping: reject any further requests, drop the queue, and wait for
     // in-flight announces to drain so no thread-pool task outlives this object
@@ -47,46 +43,29 @@ public:
     void stop();
 
     static constexpr int kTimeoutMs = 15000; // 15 s per announce
-    static constexpr int kCheckIntervalSecs = 300; // 5 min per-hash cooldown
-    static constexpr int kMaxConcurrent = 5; // concurrent scrapes
+    static constexpr int kCooldownSecs = 300; // 5 min after an answered scrape
+    static constexpr int kRetrySecs = 60; // after a scrape no tracker answered
+    static constexpr int kMaxConcurrent = 5; // concurrent background scrapes
+    static constexpr int kInteractiveSlots = 2; // extra slots for interactive ones
+    static constexpr int kMaxQueued = 500; // background backlog, oldest dropped
 
 signals:
     // Emitted once, on success, with the best swarm counts seen across the
     // torrent's trackers. Not emitted when every tracker fails.
     void scraped(const QString& infoHash, int seeders, int leechers, int completed);
 
-private slots:
-    void processQueue();
-
 private:
-    // Fan out to `trackers`, keep the best successful result, then emit/dispatch.
-    void startScrape(const QString& infoHash, const QStringList& trackers);
+    // Fan out to every default tracker, keep the best successful result, then
+    // report it back on this object's thread via onScrapeFinished().
+    void startScrape(const QString& infoHash);
 
-    // Drop cooldown entries older than the cooldown window so recentChecks_
-    // cannot grow without bound over long uptimes. Caller must hold
-    // recentChecksMutex_.
-    void pruneStaleChecks(const QDateTime& now);
+    // Free the hash's slot, emit its result and launch whatever was waiting.
+    void onScrapeFinished(const QString& infoHash, bool success, int seeders, int leechers, int completed);
 
-    // Timing / concurrency constants not exposed as settings.
-    static constexpr int kQueuePollIntervalMs = 500; // queue drain cadence
     static constexpr int kInfoHashHexLength = 40; // 20-byte hash as hex
     static constexpr int kMaxPoolThreads = 16; // announce worker threads
 
-    // Per-hash cooldown bookkeeping, pruned periodically in pruneStaleChecks().
-    QHash<QString, QDateTime> recentChecks_; // hash -> last check time
-    QDateTime lastPrune_;
-    mutable QMutex recentChecksMutex_;
-
-    // Overflow queue used when maxConcurrent_ scrapes are already in flight.
-    struct PendingRequest {
-        QString infoHash;
-        QStringList trackers;
-    };
-    QQueue<PendingRequest> pendingQueue_;
-    mutable QMutex queueMutex_;
-
-    int activeRequests_;
-    QTimer* queueTimer_;
+    ScrapeQueue queue_;
 
     // Dedicated pool for the blocking tracker announces so shutdown can drain it
     // deterministically (the global pool is shared and not ours to wait on).

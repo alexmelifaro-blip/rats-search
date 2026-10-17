@@ -118,6 +118,8 @@ private:
 
     // Tracker info scraping (descriptions/posters from tracker websites)
     void requestTrackerRefresh();
+    void onTrackerInfoChecked(const QString& hash);
+    static bool hasTrackerInfo(const QJsonObject& info);
     void updateTrackerInfoDisplay(const QJsonObject& info);
     void loadPosterImage(const QString& url);
 

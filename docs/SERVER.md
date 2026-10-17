@@ -44,6 +44,7 @@ The configuration file `rats.json` is created in the data directory:
     "darkMode": true,
     "trayOnMinimize": true,
     "trayOnClose": false,
+    "confirmExit": true,
     "startMinimized": false
 }
 ```
@@ -57,8 +58,11 @@ The configuration file `rats.json` is created in the data directory:
 | `indexerEnabled` | bool | true | Enable DHT torrent indexer |
 | `trackersEnabled` | bool | true | Enable tracker peer checking |
 | `darkMode` | bool | true | Use dark theme |
+| `uiFontFamily` | string | "" | Interface font family, tried before the theme's own font stack (empty = theme default) |
+| `uiFontScale` | int | 100 | Interface text size in percent of the default (clamped to 50–200) |
 | `trayOnMinimize` | bool | true | Hide to tray on minimize |
 | `trayOnClose` | bool | false | Hide to tray on close |
+| `confirmExit` | bool | true | Ask for confirmation before quitting the GUI |
 | `startMinimized` | bool | false | Start minimized to tray |
 
 ---

@@ -19,6 +19,11 @@ namespace rats::ui {
  * Widgets that paint themselves (TorrentItemDelegate) read the same tokens
  * through color(), so they never drift from the sheet.
  *
+ * The user's font choice is layered on top of whichever theme is loaded: the
+ * family goes in front of the `@fontUi` stack and every `font-size` in the
+ * sheet is multiplied by the scale, so it survives a light/dark switch and the
+ * two themes can still only differ in colour.
+ *
  * Not thread-safe: it is UI state and is only touched from the GUI thread.
  */
 class Theme {
@@ -28,6 +33,21 @@ public:
     /** Loads the token table for @p dark. Cheap to call again with the same value. */
     void setDark(bool dark);
     bool isDark() const { return dark_; }
+
+    /**
+     * The user's font: @p family is tried before the theme's own UI font stack
+     * (empty = the stack as is), and every font size is scaled to
+     * @p scalePercent. Cheap to call again with the same values.
+     */
+    void setFont(const QString& family, int scalePercent);
+    QString fontFamily() const { return fontFamily_; }
+    int fontScalePercent() const { return fontScalePercent_; }
+
+    /**
+     * @p size multiplied by the font scale — for widgets that paint their own
+     * text, and for the row heights sized around it.
+     */
+    qreal scaled(qreal size) const { return size * fontScalePercent_ / 100.0; }
 
     /** The expanded stylesheet for the current theme. */
     QString styleSheet() const;
@@ -48,6 +68,8 @@ private:
 
     bool loaded_ = false;
     bool dark_ = false;
+    QString fontFamily_;
+    int fontScalePercent_ = 100;
     QHash<QString, QString> tokens_;
     QString styleSheet_;
 };

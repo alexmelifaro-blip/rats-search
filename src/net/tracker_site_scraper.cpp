@@ -6,7 +6,6 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
-#include <QTimer>
 #include <QUrl>
 
 namespace rats::net {
@@ -30,11 +29,10 @@ const QVector<TrackerSiteScraper::Strategy> TrackerSiteScraper::kStrategies = {
 // ============================================================================
 
 TrackerSiteScraper::TrackerSiteScraper(QObject* parent)
-    : QObject(parent), networkManager_(new QNetworkAccessManager(this))
+    : QObject(parent)
+    , networkManager_(new QNetworkAccessManager(this))
+    , queue_({ kMaxConcurrent, kInteractiveSlots, kMaxQueued, kCooldownSecs, kRetrySecs })
 {
-    queueTimer_ = new QTimer(this);
-    queueTimer_->setInterval(kQueuePollIntervalMs);
-    connect(queueTimer_, &QTimer::timeout, this, &TrackerSiteScraper::processQueue);
 }
 
 TrackerSiteScraper::~TrackerSiteScraper()
@@ -48,17 +46,11 @@ TrackerSiteScraper::~TrackerSiteScraper()
 
 void TrackerSiteScraper::stop()
 {
-    stopping_.store(true);
+    stopping_ = true;
 
-    // Stop draining and drop anything still queued — those scrapes never started,
-    // so there is no reply to abort and no slot to free for them.
-    if (queueTimer_) {
-        queueTimer_->stop();
-    }
-    {
-        QMutexLocker locker(&queueMutex_);
-        pendingQueue_.clear();
-    }
+    // Drop anything still queued — those scrapes never started, so there is no
+    // reply to abort for them.
+    queue_.clear();
 
     // Abort every outstanding reply so none lingers up to the 20 s transfer
     // timeout during shutdown. Each reply's finished() handler still runs (with
@@ -70,90 +62,41 @@ void TrackerSiteScraper::stop()
     }
 }
 
-void TrackerSiteScraper::scrape(const QString& infoHash, const QString& name)
+bool TrackerSiteScraper::scrape(const QString& infoHash, ScrapePriority priority)
 {
-    if (stopping_.load()) {
-        return; // shutting down — accept no new work
+    if (stopping_ || infoHash.length() != kInfoHashHexLength) {
+        return false;
     }
 
-    if (infoHash.length() != kInfoHashHexLength) {
-        return;
+    switch (queue_.submit(infoHash, priority)) {
+    case ScrapeQueue::Outcome::Started:
+        startScrape(infoHash);
+        return true;
+    case ScrapeQueue::Outcome::Queued:
+        qDebug() << "TrackerSiteScraper: queued" << infoHash.left(8) << "- running:" << queue_.running()
+                 << "queued:" << queue_.queued();
+        return true;
+    case ScrapeQueue::Outcome::Running:
+        return true;
+    case ScrapeQueue::Outcome::CoolingDown:
+        qDebug() << "TrackerSiteScraper: Hash" << infoHash.left(8) << "checked recently, skipping";
+        return false;
     }
-
-    // Per-hash cooldown: skip anything scraped inside the cooldown window.
-    {
-        QMutexLocker locker(&recentChecksMutex_);
-        if (recentChecks_.contains(infoHash)) {
-            const QDateTime lastCheck = recentChecks_[infoHash];
-            if (lastCheck.secsTo(QDateTime::currentDateTime()) < kCooldownSecs) {
-                qDebug() << "TrackerSiteScraper: Hash" << infoHash.left(8) << "checked recently, skipping";
-                return;
-            }
-        }
-        recentChecks_[infoHash] = QDateTime::currentDateTime();
-    }
-
-    // Enforce the concurrency cap: start now if a slot is free, otherwise queue
-    // for the drain timer. The hash is already marked in recentChecks_ above, so
-    // it cannot be enqueued twice within the cooldown window.
-    {
-        QMutexLocker locker(&queueMutex_);
-        if (activeRequests_ >= kMaxConcurrent) {
-            pendingQueue_.enqueue({ infoHash, name });
-            qDebug() << "TrackerSiteScraper: queued" << infoHash.left(8) << "- active:" << activeRequests_
-                     << "queued:" << pendingQueue_.size();
-            if (queueTimer_ && !queueTimer_->isActive()) {
-                queueTimer_->start();
-            }
-            return;
-        }
-        activeRequests_++;
-    }
-
-    startScrape(infoHash, name);
+    return false;
 }
 
-void TrackerSiteScraper::startScrape(const QString& infoHash, const QString& name)
+void TrackerSiteScraper::startScrape(const QString& infoHash)
 {
-    // Register the pending scrape. The number of results we wait on is derived
-    // from the strategy list, not a hardcoded STRATEGY_COUNT.
-    {
-        QMutexLocker locker(&pendingMutex_);
-        PendingScrape pending;
-        pending.name = name;
-        pending.pendingCount = static_cast<int>(kStrategies.size());
-        pendingScrapes_[infoHash] = pending;
-    }
+    // The number of results we wait on is derived from the strategy list.
+    PendingScrape pending;
+    pending.pendingCount = static_cast<int>(kStrategies.size());
+    pendingScrapes_.insert(infoHash, pending);
 
-    qInfo() << "TrackerSiteScraper: Scraping tracker info for" << infoHash.left(16) << name.left(48);
+    qInfo() << "TrackerSiteScraper: Scraping tracker info for" << infoHash.left(16);
 
     // Launch every strategy in parallel.
     for (const Strategy strategy : kStrategies) {
         (this->*strategy)(infoHash);
-    }
-}
-
-void TrackerSiteScraper::processQueue()
-{
-    if (stopping_.load()) {
-        return;
-    }
-
-    QMutexLocker locker(&queueMutex_);
-
-    // Drain as many queued scrapes as the concurrency cap allows.
-    while (!pendingQueue_.isEmpty() && activeRequests_ < kMaxConcurrent) {
-        PendingRequest req = pendingQueue_.dequeue();
-        activeRequests_++;
-
-        // Release the lock while kicking off the scrape (it launches network I/O).
-        locker.unlock();
-        startScrape(req.infoHash, req.name);
-        locker.relock();
-    }
-
-    if (pendingQueue_.isEmpty() && queueTimer_) {
-        queueTimer_->stop();
     }
 }
 
@@ -177,17 +120,13 @@ void TrackerSiteScraper::scrapeRutracker(const QString& hash)
     connect(reply, &QNetworkReply::finished, this, [this, reply, hash]() {
         reply->deleteLater();
 
-        TrackerSiteInfo info;
-        info.trackerName = "rutracker";
-
-        if (reply->error() == QNetworkReply::NoError) {
-            const QByteArray rawData = reply->readAll();
-            info = parseRutrackerHtml(rawData);
-        } else {
+        if (reply->error() != QNetworkReply::NoError) {
             qDebug() << "TrackerSiteScraper: RuTracker request failed:" << reply->errorString();
+            onStrategyFailed(hash);
+            return;
         }
 
-        onStrategyComplete(hash, info);
+        onStrategyComplete(hash, parseRutrackerHtml(reply->readAll()));
     });
 }
 
@@ -313,9 +252,7 @@ void TrackerSiteScraper::scrapeNyaa(const QString& hash)
 
         if (reply->error() != QNetworkReply::NoError) {
             qDebug() << "TrackerSiteScraper: Nyaa request failed:" << reply->errorString();
-            TrackerSiteInfo info;
-            info.trackerName = "nyaa";
-            onStrategyComplete(hash, info);
+            onStrategyFailed(hash);
             return;
         }
 
@@ -333,25 +270,18 @@ void TrackerSiteScraper::scrapeNyaa(const QString& hash)
         if (searchInfo.success && searchInfo.threadId > 0) {
             // Found a result — fetch the view page for full details.
             scrapeNyaaViewPage(hash, QString("https://nyaa.si/view/%1").arg(searchInfo.threadId));
-        } else if (searchInfo.success) {
-            // Got some info directly from the search page.
-            onStrategyComplete(hash, searchInfo);
         } else {
-            // No results on Nyaa.
-            TrackerSiteInfo emptyInfo;
-            emptyInfo.trackerName = "nyaa";
-            onStrategyComplete(hash, emptyInfo);
+            // Info straight from the search page, or no result on Nyaa at all.
+            onStrategyComplete(hash, searchInfo);
         }
     });
 }
 
 void TrackerSiteScraper::scrapeNyaaViewPage(const QString& hash, const QString& viewUrl)
 {
-    if (stopping_.load()) {
+    if (stopping_) {
         // Don't chain a fresh request during shutdown; close out the strategy.
-        TrackerSiteInfo info;
-        info.trackerName = "nyaa";
-        onStrategyComplete(hash, info);
+        onStrategyFailed(hash);
         return;
     }
 
@@ -366,16 +296,13 @@ void TrackerSiteScraper::scrapeNyaaViewPage(const QString& hash, const QString& 
     connect(reply, &QNetworkReply::finished, this, [this, reply, hash]() {
         reply->deleteLater();
 
-        TrackerSiteInfo info;
-        info.trackerName = "nyaa";
-
-        if (reply->error() == QNetworkReply::NoError) {
-            info = parseNyaaViewHtml(reply->readAll());
-        } else {
+        if (reply->error() != QNetworkReply::NoError) {
             qDebug() << "TrackerSiteScraper: Nyaa view page request failed:" << reply->errorString();
+            onStrategyFailed(hash);
+            return;
         }
 
-        onStrategyComplete(hash, info);
+        onStrategyComplete(hash, parseNyaaViewHtml(reply->readAll()));
     });
 }
 
@@ -488,50 +415,55 @@ TrackerSiteInfo TrackerSiteScraper::parseNyaaViewHtml(const QByteArray& rawData)
 
 void TrackerSiteScraper::onStrategyComplete(const QString& hash, const TrackerSiteInfo& info)
 {
-    {
-        QMutexLocker locker(&pendingMutex_);
-        auto it = pendingScrapes_.find(hash);
-        if (it == pendingScrapes_.end()) {
-            return;
-        }
-
-        if (info.success) {
-            it->results.append(info);
-        }
-        it->pendingCount--;
-    }
-
-    checkAllComplete(hash);
-}
-
-void TrackerSiteScraper::checkAllComplete(const QString& hash)
-{
-    QMutexLocker locker(&pendingMutex_);
     auto it = pendingScrapes_.find(hash);
     if (it == pendingScrapes_.end()) {
         return;
     }
 
-    if (it->pendingCount > 0) {
+    if (info.success) {
+        it->results.append(info);
+    }
+    if (--it->pendingCount > 0) {
         return; // still waiting for some strategies
     }
 
-    // All strategies complete — fold the results into a single JSON object. Only
-    // the freshly scraped keys are emitted; the listener merges them into the
-    // stored torrent.
+    const PendingScrape done = *it;
+    pendingScrapes_.erase(it);
+
+    // This hash is done — free its slot (the quiet period depends on whether
+    // every tracker answered) and launch whatever now holds a slot.
+    const QStringList next = queue_.finish(hash, !done.failed);
+    if (!stopping_) {
+        for (const QString& queued : next) {
+            startScrape(queued);
+        }
+    }
+
+    const QJsonObject merged = mergeResults(done.results);
+    if (!merged.isEmpty()) {
+        emit scraped(hash, merged);
+    }
+    emit finished(hash);
+}
+
+void TrackerSiteScraper::onStrategyFailed(const QString& hash)
+{
+    auto it = pendingScrapes_.find(hash);
+    if (it == pendingScrapes_.end()) {
+        return;
+    }
+    it->failed = true;
+    onStrategyComplete(hash, TrackerSiteInfo {});
+}
+
+QJsonObject TrackerSiteScraper::mergeResults(const QVector<TrackerSiteInfo>& results)
+{
     QJsonObject info;
     QJsonArray trackers;
 
-    for (const TrackerSiteInfo& result : it->results) {
+    for (const TrackerSiteInfo& result : results) {
         // Add tracker to the list (deduplicated).
-        bool alreadyListed = false;
-        for (const QJsonValue& t : trackers) {
-            if (t.toString() == result.trackerName) {
-                alreadyListed = true;
-                break;
-            }
-        }
-        if (!alreadyListed) {
+        if (!trackers.contains(result.trackerName)) {
             trackers.append(result.trackerName);
         }
 
@@ -564,23 +496,7 @@ void TrackerSiteScraper::checkAllComplete(const QString& hash)
     if (!trackers.isEmpty()) {
         info["trackers"] = trackers;
     }
-
-    pendingScrapes_.erase(it);
-    locker.unlock();
-
-    // This hash is done — free its concurrency slot and let queued scrapes start.
-    {
-        QMutexLocker qlock(&queueMutex_);
-        if (activeRequests_ > 0) {
-            activeRequests_--;
-        }
-    }
-    processQueue();
-
-    // Only emit when at least one tracker produced data.
-    if (!trackers.isEmpty()) {
-        emit scraped(hash, info);
-    }
+    return info;
 }
 
 // ============================================================================

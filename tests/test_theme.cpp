@@ -31,6 +31,10 @@ private slots:
     void tokensReadAsColours_data();
     void tokensReadAsColours();
     void switchingThemeChangesTheSheet();
+    void fontFamilyGoesInFrontOfTheStack();
+    void fontScaleMultipliesFontSizesOnly();
+    void fontSurvivesThemeSwitch();
+    void fontFamilyCannotBreakOutOfTheDeclaration();
 
 private:
     static QSet<QString> tokenKeys(const QString& path);
@@ -162,6 +166,91 @@ void TestTheme::switchingThemeChangesTheSheet()
     QVERIFY(light != dark);
     QVERIFY(lightSurface != darkSurface);
     QVERIFY(lightSurface.lightness() > darkSurface.lightness());
+}
+
+// The base rule in theme.qss: `* { font-family: ...; font-size: 13px; }`.
+static QString baseFontRule(const QString& sheet)
+{
+    static const QRegularExpression base(
+        QStringLiteral("\\*\\s*\\{\\s*font-family:([^;]*);\\s*font-size:\\s*(\\d+)px"));
+    const QRegularExpressionMatch match = base.match(sheet);
+    return match.hasMatch() ? match.captured(1).trimmed() + QLatin1Char('|') + match.captured(2) : QString();
+}
+
+void TestTheme::fontFamilyGoesInFrontOfTheStack()
+{
+    Theme& theme = Theme::instance();
+    theme.setDark(false);
+    theme.setFont(QString(), 100);
+    const QString stack = theme.value(QLatin1String("fontUi"));
+    QVERIFY(!stack.isEmpty());
+
+    theme.setFont(QStringLiteral("Comic Neue"), 100);
+    // Kept as a fallback: a family missing on this machine must land on the
+    // theme's choice, not on Qt's last resort.
+    QCOMPARE(theme.value(QLatin1String("fontUi")), QStringLiteral("\"Comic Neue\", ") + stack);
+    QVERIFY(baseFontRule(theme.styleSheet()).startsWith(QStringLiteral("\"Comic Neue\", ")));
+
+    theme.setFont(QString(), 100);
+    QCOMPARE(theme.value(QLatin1String("fontUi")), stack);
+}
+
+void TestTheme::fontScaleMultipliesFontSizesOnly()
+{
+    Theme& theme = Theme::instance();
+    theme.setDark(false);
+    theme.setFont(QString(), 100);
+    const QString normal = theme.styleSheet();
+    QVERIFY(baseFontRule(normal).endsWith(QStringLiteral("|13")));
+
+    theme.setFont(QString(), 200);
+    const QString doubled = theme.styleSheet();
+    QVERIFY(baseFontRule(doubled).endsWith(QStringLiteral("|26")));
+    QCOMPARE(theme.scaled(10), 20.0);
+
+    // Paddings, radii and borders keep their size: with the font sizes put
+    // back, the two sheets are the same text.
+    static const QRegularExpression fontSize(QStringLiteral("font-size\\s*:\\s*\\d+px"));
+    QString a = normal, b = doubled;
+    a.replace(fontSize, QStringLiteral("font-size"));
+    b.replace(fontSize, QStringLiteral("font-size"));
+    QCOMPARE(a, b);
+
+    theme.setFont(QString(), 100);
+    QCOMPARE(theme.styleSheet(), normal);
+}
+
+void TestTheme::fontSurvivesThemeSwitch()
+{
+    Theme& theme = Theme::instance();
+    theme.setDark(false);
+    theme.setFont(QStringLiteral("Comic Neue"), 150);
+
+    theme.setDark(true);
+    QVERIFY(theme.isDark());
+    const QString rule = baseFontRule(theme.styleSheet());
+    QVERIFY2(rule.startsWith(QStringLiteral("\"Comic Neue\"")), qPrintable(rule));
+    QVERIFY2(rule.endsWith(QStringLiteral("|20")), qPrintable(rule)); // 13px * 1.5, rounded
+
+    theme.setFont(QString(), 100);
+    theme.setDark(false);
+}
+
+void TestTheme::fontFamilyCannotBreakOutOfTheDeclaration()
+{
+    // The family reaches the config through `config.set` as well as through the
+    // dialog, so it is sheet input from the outside.
+    Theme& theme = Theme::instance();
+    theme.setDark(false);
+    theme.setFont(QStringLiteral("Evil\"; } QWidget { background: @bg; color: red"), 100);
+
+    const QString family = theme.value(QLatin1String("fontUi")).section(QLatin1Char(','), 0, 0);
+    QVERIFY2(!family.mid(1, family.size() - 2).contains(QLatin1Char('"')), qPrintable(family));
+    QVERIFY(!family.contains(QLatin1Char(';')));
+    QVERIFY(!family.contains(QLatin1Char('}')));
+    QVERIFY(!family.contains(QLatin1Char('@')));
+
+    theme.setFont(QString(), 100);
 }
 
 QTEST_MAIN(TestTheme)

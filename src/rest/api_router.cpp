@@ -873,6 +873,7 @@ void ApiRouter::registerMethods()
             return;
         }
         app_->trackers()->checkCounts(hash);
+        app_->trackers()->checkInfo(hash);
         QJsonObject result;
         result["hash"] = hash;
         result["status"] = "checking";

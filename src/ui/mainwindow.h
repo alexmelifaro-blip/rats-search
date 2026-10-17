@@ -228,6 +228,11 @@ private:
     QTabWidget* tabWidget = nullptr;
     QSplitter* mainSplitter = nullptr; // Horizontal: tabs + details
     QSplitter* verticalSplitter = nullptr; // Vertical: main content + files panel
+    // Last sizes the user dragged the splitters to, persisted by saveSettings().
+    // Kept here rather than read back from the splitters, which report 0 for a
+    // hidden pane — and the details/files panes start hidden.
+    QList<int> detailsSplitterSizes_ { 900, 350 };
+    QList<int> filesSplitterSizes_ { 600, 200 };
     TorrentDetailsPanel* detailsPanel = nullptr;
     TorrentFilesWidget* filesWidget = nullptr; // Bottom panel for file list
 

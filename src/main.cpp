@@ -22,6 +22,7 @@
 #include "mainwindow.h"
 #include "migrationprogresswindow.h"
 #include "services/migration_service.h"
+#include "theme.h"
 #include "version.h"
 
 #ifdef _WIN32
@@ -318,6 +319,9 @@ int main(int argc, char* argv[])
     // Blocking pre-start migrations run inside start(), before MainWindow exists
     // and before the event loop is entered — the splash draws itself from inside
     // that call, and stays hidden when there is no migration to run.
+    // The splash is the first styled window, so the user's font is set here; the
+    // Theme keeps it for every window after.
+    rats::ui::Theme::instance().setFont(application->config()->uiFontFamily(), application->config()->uiFontScale());
     MigrationProgressWindow migrationSplash(application->migrations(), application->config()->darkMode());
     if (!application->start()) {
         qCritical() << "Failed to start application";

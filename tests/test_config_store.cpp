@@ -25,6 +25,7 @@ private slots:
     void replicationImpliesReplicationServer();
     void disablingReplicationServer_disablesReplication();
     void languageAndDarkMode_haveDedicatedSignals();
+    void uiFont_defaultsAndClamping();
     void saveThenLoad_roundTrips();
 
 private:
@@ -134,6 +135,35 @@ void TestConfigStore::languageAndDarkMode_haveDedicatedSignals()
     QCOMPARE(languageSpy.at(0).at(0).toString(), QStringLiteral("ru"));
     QCOMPARE(darkModeSpy.count(), 1);
     QCOMPARE(darkModeSpy.at(0).at(0).toBool(), true);
+}
+
+void TestConfigStore::uiFont_defaultsAndClamping()
+{
+    QCOMPARE(config_->uiFontFamily(), QString());
+    QCOMPARE(config_->uiFontScale(), ConfigStore::kDefaultUiFontScale);
+
+    QSignalSpy spy(config_, &ConfigStore::configChanged);
+    config_->setUiFontFamily(QStringLiteral("  Noto Sans  "));
+    QCOMPARE(config_->uiFontFamily(), QStringLiteral("Noto Sans"));
+    QCOMPARE(spy.at(0).at(0).toStringList(), QStringList { "uiFontFamily" });
+
+    config_->setUiFontScale(1000);
+    QCOMPARE(config_->uiFontScale(), ConfigStore::kMaxUiFontScale);
+    config_->setUiFontScale(1);
+    QCOMPARE(config_->uiFontScale(), ConfigStore::kMinUiFontScale);
+
+    // `config.set` goes through the same clamp.
+    config_->fromJson(QJsonObject { { "uiFontScale", 5000 } });
+    QCOMPARE(config_->uiFontScale(), ConfigStore::kMaxUiFontScale);
+
+    // So does a hand-edited file.
+    QFile file(path_);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({ "uiFontScale": 3 })");
+    file.close();
+    ConfigStore reloaded(path_);
+    QVERIFY(reloaded.load());
+    QCOMPARE(reloaded.uiFontScale(), ConfigStore::kMinUiFontScale);
 }
 
 void TestConfigStore::saveThenLoad_roundTrips()

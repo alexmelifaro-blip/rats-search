@@ -50,6 +50,46 @@ QString expand(const QString& tmpl, const QHash<QString, QString>& tokens)
     return out;
 }
 
+/**
+ * @p family as a QSS font-family entry. The value comes from the config, which
+ * `config.set` can write too, so anything that could close the string or the
+ * declaration is dropped rather than escaped — no real family name has it.
+ */
+QString quoteFamily(QString family)
+{
+    static const QRegularExpression unsafe(QStringLiteral("[\"'\\\\;{}@\r\n]"));
+    family.remove(unsafe);
+    family = family.trimmed();
+    return family.isEmpty() ? QString() : QLatin1Char('"') + family + QLatin1Char('"');
+}
+
+/**
+ * Multiplies every `font-size: <n>px` in @p sheet by @p percent. Only font
+ * sizes: paddings and radii stay, so a larger font does not turn into a
+ * coarser layout — that is what the platform's display scaling is for.
+ */
+QString scaleFontSizes(const QString& sheet, int percent)
+{
+    if (percent == 100) {
+        return sheet;
+    }
+    static const QRegularExpression fontSize(QStringLiteral("(font-size\\s*:\\s*)(\\d+(?:\\.\\d+)?)px"));
+
+    QString out;
+    out.reserve(sheet.size());
+    qsizetype copied = 0;
+    auto it = fontSize.globalMatch(sheet);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        const int px = qMax(1, qRound(match.captured(2).toDouble() * percent / 100.0));
+        out += QStringView(sheet).mid(copied, match.capturedStart(2) - copied);
+        out += QString::number(px);
+        copied = match.capturedEnd(2);
+    }
+    out += QStringView(sheet).mid(copied);
+    return out;
+}
+
 } // namespace
 
 Theme& Theme::instance()
@@ -64,6 +104,19 @@ void Theme::setDark(bool dark)
         return;
     }
     load(dark);
+}
+
+void Theme::setFont(const QString& family, int scalePercent)
+{
+    const QString trimmed = family.trimmed();
+    if (fontFamily_ == trimmed && fontScalePercent_ == scalePercent) {
+        return;
+    }
+    fontFamily_ = trimmed;
+    fontScalePercent_ = qMax(1, scalePercent);
+    if (loaded_) {
+        load(dark_);
+    }
 }
 
 void Theme::load(bool dark)
@@ -89,8 +142,19 @@ void Theme::load(bool dark)
         }
     }
 
-    styleSheet_ = expand(readResource(QStringLiteral(":/styles/styles/theme.qss")), tokens_);
-    qInfo() << (dark ? "Dark" : "Light") << "theme loaded:" << tokens_.size() << "tokens";
+    const QString family = quoteFamily(fontFamily_);
+    if (!family.isEmpty()) {
+        // In front of the stack, not instead of it: a family that is not
+        // installed (a config carried to another machine) falls through to the
+        // theme's own choice instead of to Qt's last-resort default.
+        const QString stack = tokens_.value(QStringLiteral("fontUi"));
+        tokens_.insert(QStringLiteral("fontUi"), stack.isEmpty() ? family : family + QStringLiteral(", ") + stack);
+    }
+
+    styleSheet_
+        = scaleFontSizes(expand(readResource(QStringLiteral(":/styles/styles/theme.qss")), tokens_), fontScalePercent_);
+    qInfo() << (dark ? "Dark" : "Light") << "theme loaded:" << tokens_.size() << "tokens, font"
+            << (fontFamily_.isEmpty() ? QStringLiteral("default") : fontFamily_) << fontScalePercent_ << "%";
 }
 
 QString Theme::styleSheet() const

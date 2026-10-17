@@ -230,14 +230,14 @@ jobs:
           Get-ChildItem "installer\*.exe" | ForEach-Object { Write-Host $_.Name }
 
       - name: Upload artifact (ZIP)
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-Windows-x64-zip
           path: RatsSearch-Windows-x64-*.zip
           retention-days: 30
 
       - name: Upload artifact (Installer)
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-Windows-x64-setup
           path: installer/RatsSearch-Windows-x64-*-setup.exe
@@ -373,7 +373,7 @@ jobs:
           ls -la "$DMG_NAME"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-macOS-Intel
           path: RatsSearch-macOS-Intel-*.dmg
@@ -488,6 +488,14 @@ jobs:
           echo "Copied Manticore binaries:"
           ls -la "$BUNDLE_DIR/"
 
+      - name: Re-sign bundle
+        # The Manticore binaries copied in above weren't in macdeployqt's sealed
+        # resource manifest, so Gatekeeper rejects the download with "app is
+        # damaged". Re-seal the whole bundle ad-hoc after all files are in place.
+        # Note: the Intel job (build-macos-intel) has the same pattern and likely
+        # needs the same fix, but is left untouched here -- unverified on this branch.
+        run: codesign --force --deep --sign - build/bin/RatsSearch.app
+
       - name: Get version
         id: version
         run: |
@@ -521,7 +529,7 @@ jobs:
           ls -la "$DMG_NAME"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: RatsSearch-macOS-ARM
           path: RatsSearch-macOS-ARM-*.dmg
@@ -810,7 +818,7 @@ jobs:
           fi
 
       - name: Upload artifact (AppImage)
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: hashFiles('RatsSearch-Linux-x64-*.AppImage') != ''
         with:
           name: RatsSearch-Linux-x64-AppImage
@@ -818,7 +826,7 @@ jobs:
           retention-days: 30
 
       - name: Upload artifact (tar.gz)
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: hashFiles('RatsSearch-Linux-x64-*.tar.gz') != ''
         with:
           name: RatsSearch-Linux-x64
@@ -851,7 +859,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 

@@ -80,9 +80,12 @@ private:
     QComboBox* languageCombo_;
     QCheckBox* minimizeToTrayCheck_;
     QCheckBox* closeToTrayCheck_;
+    QCheckBox* confirmExitCheck_;
     QCheckBox* startMinimizedCheck_;
     QCheckBox* autoStartCheck_;
     QCheckBox* darkModeCheck_;
+    QComboBox* fontFamilyCombo_;
+    QSpinBox* fontScaleSpin_;
     QCheckBox* checkUpdatesCheck_;
     QCheckBox* searchHistoryCheck_;
     QPushButton* clearSearchHistoryButton_;

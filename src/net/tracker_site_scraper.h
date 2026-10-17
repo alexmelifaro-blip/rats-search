@@ -1,24 +1,20 @@
 #ifndef RATS_NET_TRACKER_SITE_SCRAPER_H
 #define RATS_NET_TRACKER_SITE_SCRAPER_H
 
-#include <QDateTime>
+#include "net/scrape_queue.h"
+
 #include <QHash>
 #include <QJsonObject>
-#include <QMutex>
 #include <QObject>
-#include <QQueue>
 #include <QString>
 #include <QVector>
 
-#include <atomic>
-
 class QNetworkAccessManager;
-class QTimer;
 
 namespace rats::net {
 
 // Result of scraping a single tracker website for one info-hash. Internal DTO:
-// the parse* helpers fill it in and checkAllComplete() folds the per-tracker
+// the parse* helpers fill it in and mergeResults() folds the per-tracker
 // DTOs into the single JSON object carried by scraped().
 struct TrackerSiteInfo {
     QString trackerName; // "rutracker" | "nyaa"
@@ -41,6 +37,11 @@ struct TrackerSiteInfo {
 // `info` field (poster, description, contentCategory, trackers[],
 // rutrackerThreadId, nyaaThreadId, trackerName). A higher-level
 // service listens for scraped() and persists those fields onto the torrent.
+//
+// Which hashes run, wait or are skipped is decided by a ScrapeQueue. Every
+// in-flight QNetworkReply holds a fully decompressed tracker page in memory, so
+// background scrapes are capped hard; an interactive request still starts at
+// once. Lives on one thread (QNetworkAccessManager requires it): call it there.
 class TrackerSiteScraper : public QObject {
     Q_OBJECT
 
@@ -48,29 +49,25 @@ public:
     explicit TrackerSiteScraper(QObject* parent = nullptr);
     ~TrackerSiteScraper() override;
 
-    // Scrape every supported tracker for `infoHash` (40-char hex). `name` is the
-    // torrent name, carried for logging / context. Non-blocking: on success
-    // scraped() is emitted later on this object's thread. Requests inside the
-    // per-hash cooldown window are dropped. Whether scraping happens at all is
+    // Scrape every supported tracker for `infoHash` (40-char hex). Non-blocking.
+    // Returns whether a scrape is now running or queued for the hash — and so
+    // whether finished() will follow (a queued *background* request can still be
+    // dropped from a full backlog). False when the hash was scraped recently, is
+    // invalid, or the scraper is stopping. Whether scraping happens at all is
     // decided by the caller (TrackerService).
-    void scrape(const QString& infoHash, const QString& name);
+    bool scrape(const QString& infoHash, ScrapePriority priority = ScrapePriority::Background);
 
     // Stop scraping: reject further scrape() calls and abort every in-flight
     // network request so shutdown is not held up waiting on tracker websites.
-    // Idempotent; must be called on this object's thread.
+    // Idempotent.
     void stop();
 
     static constexpr int kTimeoutMs = 20000; // 20 s per request
-    static constexpr int kCooldownSecs = 3600; // 1 h per-hash cooldown
-
-    // Concurrency cap. Each scraped hash fans out kStrategies parallel HTTP
-    // requests, and every in-flight QNetworkReply holds a fully decompressed
-    // tracker page in memory (large HTML, gzip/zstd-inflated by Qt). A burst of
-    // freshly-crawled torrents would otherwise fire an unbounded number of these
-    // at once — the dominant heap consumer under load — so at most kMaxConcurrent
-    // hashes scrape simultaneously; the rest wait in a FIFO queue drained by a
-    // poll timer as slots free up. Mirrors SwarmScraper's cap.
-    static constexpr int kMaxConcurrent = 3; // concurrent hash scrapes
+    static constexpr int kCooldownSecs = 3600; // 1 h after an answered scrape
+    static constexpr int kRetrySecs = 60; // after a scrape a tracker failed to answer
+    static constexpr int kMaxConcurrent = 3; // concurrent background scrapes
+    static constexpr int kInteractiveSlots = 2; // extra slots for interactive ones
+    static constexpr int kMaxQueued = 200; // background backlog, oldest dropped
 
 signals:
     // Emitted once all strategies for `infoHash` have finished AND at least one
@@ -78,14 +75,12 @@ signals:
     // listener is responsible for merging them into the stored torrent.
     void scraped(const QString& infoHash, const QJsonObject& info);
 
-private:
-    // Register a hash's pending scrape and launch its strategies. Assumes a
-    // concurrency slot has already been claimed by scrape()/processQueue().
-    void startScrape(const QString& infoHash, const QString& name);
+    // Emitted after every scrape, found or not (after scraped() when found), so
+    // whoever is waiting on the hash can stop waiting.
+    void finished(const QString& infoHash);
 
-    // Drain the overflow queue: start as many queued scrapes as free slots allow.
-    // Called when a slot frees up (a hash finished) and periodically by the timer.
-    void processQueue();
+private:
+    void startScrape(const QString& infoHash);
 
     // Strategy launchers — one network round-trip family each.
     void scrapeRutracker(const QString& hash);
@@ -97,9 +92,16 @@ private:
     TrackerSiteInfo parseNyaaSearchHtml(const QByteArray& rawData);
     TrackerSiteInfo parseNyaaViewHtml(const QByteArray& rawData);
 
-    // Called by each strategy when it finishes; merges once all have reported.
+    // Called by each strategy when it finishes; once all have reported, merges
+    // the results, emits and hands the slot to the next queued hash.
+    // onStrategyFailed() is the same for a strategy that got no answer from its
+    // tracker, which shortens the hash's quiet period to a retry delay.
     void onStrategyComplete(const QString& hash, const TrackerSiteInfo& info);
-    void checkAllComplete(const QString& hash);
+    void onStrategyFailed(const QString& hash);
+
+    // Fold per-tracker results into the JSON object carried by scraped(). Empty
+    // when no tracker found the torrent.
+    static QJsonObject mergeResults(const QVector<TrackerSiteInfo>& results);
 
     // Strip HTML tags / decode entities into plain text.
     static QString stripHtml(const QString& html);
@@ -122,36 +124,21 @@ private:
     static constexpr int kInfoHashHexLength = 40; // 20-byte hash as hex
     static constexpr int kEncodingSniffLength = 2000; // bytes scanned for charset
     static constexpr int kMaxDescriptionLength = 5000; // description clamp
-    static constexpr int kQueuePollIntervalMs = 500; // overflow-queue drain cadence
 
     QNetworkAccessManager* networkManager_;
 
     // Set by stop(): rejects new scrapes while the app is shutting down.
-    std::atomic<bool> stopping_ { false };
+    bool stopping_ = false;
 
-    // Per-hash cooldown bookkeeping.
-    mutable QMutex recentChecksMutex_;
-    QHash<QString, QDateTime> recentChecks_;
+    ScrapeQueue queue_;
 
     // In-flight scrapes: accumulate per-strategy results until all report.
     struct PendingScrape {
-        QString name;
         int pendingCount = 0;
+        bool failed = false; // some tracker did not answer
         QVector<TrackerSiteInfo> results;
     };
-    mutable QMutex pendingMutex_;
     QHash<QString, PendingScrape> pendingScrapes_;
-
-    // Concurrency cap + overflow queue (see kMaxConcurrent). A scrape holds one
-    // slot from startScrape() until all its strategies report in checkAllComplete().
-    struct PendingRequest {
-        QString infoHash;
-        QString name;
-    };
-    mutable QMutex queueMutex_;
-    QQueue<PendingRequest> pendingQueue_;
-    int activeRequests_ = 0;
-    QTimer* queueTimer_ = nullptr;
 };
 
 } // namespace rats::net

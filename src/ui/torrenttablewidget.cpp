@@ -86,6 +86,11 @@ rats::domain::Torrent TorrentTableWidget::selectedTorrent() const
     return rats::domain::Torrent();
 }
 
+QHeaderView* TorrentTableWidget::columnHeader() const
+{
+    return tableView_->horizontalHeader();
+}
+
 void TorrentTableWidget::setResults(const QVector<rats::domain::SearchHit>& hits)
 {
     model_->setResults(hits);

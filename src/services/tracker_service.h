@@ -2,6 +2,7 @@
 #define RATS_SERVICE_TRACKER_SERVICE_H
 
 #include "domain/torrent.h"
+#include "net/scrape_queue.h"
 
 #include <QJsonObject>
 #include <QObject>
@@ -23,6 +24,9 @@ namespace rats::service {
 // scrape and a website-metadata (poster/description) scrape; results flow back
 // through the scrapers' signals and are written to the repository. The scrapers
 // themselves never touch the database — this is the only glue that does.
+//
+// Scrapes of freshly indexed torrents are background work; the explicit check*
+// calls default to interactive priority, which jumps every background queue.
 class TrackerService : public QObject {
     Q_OBJECT
 
@@ -37,9 +41,17 @@ public:
     // shutdown so no fresh tracker work is issued while the app is closing.
     void stop();
 
-    // Explicit requests (also used by the API "tracker.check" method).
-    void checkCounts(const QString& hash);
-    void checkInfo(const QString& hash, const QString& name);
+    // Explicit requests (the details panel, the API "tracker.check" method).
+    // Each returns whether a scrape is now running or queued for the hash —
+    // false when scraping is disabled or the hash was checked recently. For
+    // checkInfo(), true means infoChecked() follows.
+    bool checkCounts(const QString& hash, net::ScrapePriority priority = net::ScrapePriority::Interactive);
+    bool checkInfo(const QString& hash, net::ScrapePriority priority = net::ScrapePriority::Interactive);
+
+signals:
+    // A website-info scrape for `hash` ended, found or not. Anything it found is
+    // already in the repository (and announced by its torrentUpdated) by then.
+    void infoChecked(const QString& hash);
 
 public slots:
     // Wire to IndexingService::torrentIndexed.

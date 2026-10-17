@@ -71,6 +71,11 @@ void TorrentItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& o
     const QColor dimTextColor = theme.color(QLatin1String("textFaint"));
     const QColor borderColor = theme.color(QLatin1String("rowBorder"));
 
+    // The row is laid out for the default font; the user's font scale stretches
+    // the text and the row heights with it (see sizeHint()).
+    const int baseRowHeight = qRound(theme.scaled(BaseRowHeight));
+    const int filePathRowHeight = qRound(theme.scaled(FilePathRowHeight));
+
     // Get column
     int column = index.column();
     // Paddings
@@ -95,7 +100,7 @@ void TorrentItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& o
         // Calculate name area (top portion for torrents with file paths)
         QRect nameRect = rect;
         if (hasFilePaths) {
-            nameRect.setHeight(BaseRowHeight - 4);
+            nameRect.setHeight(baseRowHeight - 4);
         }
 
         // Draw content type icon (emoji glyph from the domain content type)
@@ -105,38 +110,42 @@ void TorrentItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& o
         int iconLeft = nameRect.left();
         if (!typeIcon.isEmpty()) {
             const int filesOffset = hasFilePaths ? -3 : 0; // Offset for files as name will be shifted top
+            const int iconWidth = qRound(theme.scaled(16));
+            const int iconHeight = qRound(theme.scaled(14));
             QRect iconRect(iconLeft,
-                nameRect.top() + filesOffset + borderBottom + (qMin(nameRect.height(), BaseRowHeight - 4) - 14) / 2, 16,
-                14);
+                nameRect.top() + filesOffset + borderBottom
+                    + (qMin(nameRect.height(), baseRowHeight - 4) - iconHeight) / 2,
+                iconWidth, iconHeight);
             QFont iconFont = option.font;
-            iconFont.setPointSize(10);
+            iconFont.setPointSizeF(theme.scaled(10));
             painter->setFont(iconFont);
             painter->setPen(option.state & QStyle::State_Selected ? selectedTextColor : textColor);
             painter->drawText(iconRect, Qt::AlignVCenter | Qt::AlignLeft, typeIcon);
-            nameRect.setLeft(iconLeft + 18);
+            nameRect.setLeft(iconLeft + iconWidth + 2);
         }
 
         // Draw name - use selected text color if selected
         painter->setPen(option.state & QStyle::State_Selected ? selectedTextColor : textColor);
         QFont font = option.font;
-        font.setPointSize(10);
+        font.setPointSizeF(theme.scaled(10));
         painter->setFont(font);
+        const QFontMetrics nameMetrics(font);
         QString name = index.data(Qt::DisplayRole).toString();
 
         QRect textRect = nameRect;
         if (hasFilePaths) {
             textRect.setTop(nameRect.top() + 2);
             painter->drawText(textRect, Qt::AlignTop | Qt::AlignLeft | Qt::TextSingleLine,
-                option.fontMetrics.elidedText(name, Qt::ElideRight, textRect.width()));
+                nameMetrics.elidedText(name, Qt::ElideRight, textRect.width()));
         } else {
             painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine,
-                option.fontMetrics.elidedText(name, Qt::ElideRight, textRect.width()));
+                nameMetrics.elidedText(name, Qt::ElideRight, textRect.width()));
         }
 
         // Draw matching file paths below the name
         if (hasFilePaths) {
             QFont pathFont = option.font;
-            pathFont.setPointSize(8);
+            pathFont.setPointSizeF(theme.scaled(8));
             painter->setFont(pathFont);
 
             const QColor pathColor
@@ -147,16 +156,16 @@ void TorrentItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& o
                 = theme.color(option.state & QStyle::State_Selected ? QLatin1String("matchHighlightSelected")
                                                                     : QLatin1String("matchHighlight"));
 
-            int pathTop = rect.top() + BaseRowHeight - 6;
+            int pathTop = rect.top() + baseRowHeight - 6;
             int pathsToShow = qMin(matchingPaths.size(), MaxVisiblePaths);
 
             for (int i = 0; i < pathsToShow; ++i) {
-                QRect pathRect(iconLeft + 20, pathTop + (i * FilePathRowHeight), rect.width() - 24, FilePathRowHeight);
+                QRect pathRect(iconLeft + 20, pathTop + (i * filePathRowHeight), rect.width() - 24, filePathRowHeight);
 
                 // Draw tree connector
                 painter->setPen(pathColor);
                 painter->drawText(
-                    QRect(iconLeft + 4, pathRect.top(), 16, FilePathRowHeight), Qt::AlignVCenter | Qt::AlignLeft, "└");
+                    QRect(iconLeft + 4, pathRect.top(), 16, filePathRowHeight), Qt::AlignVCenter | Qt::AlignLeft, "└");
 
                 // Draw highlighted path
                 drawHighlightedPath(painter, pathRect, matchingPaths[i], pathColor, highlightColor, pathFont);
@@ -216,16 +225,19 @@ QSize TorrentItemDelegate::sizeHint(const QStyleOptionViewItem& option, const QM
 {
     Q_UNUSED(option);
 
+    const rats::ui::Theme& theme = rats::ui::Theme::instance();
+    const int baseRowHeight = qRound(theme.scaled(BaseRowHeight));
+
     // Check if this result has matching file paths
     QStringList matchingPaths = index.data(SearchResultModel::MatchingPathsRole).toStringList();
 
     if (matchingPaths.isEmpty()) {
-        return QSize(-1, BaseRowHeight);
+        return QSize(-1, baseRowHeight);
     }
 
     // Calculate height based on number of file paths to show
     int pathsToShow = qMin(matchingPaths.size(), MaxVisiblePaths);
-    int totalHeight = BaseRowHeight + (pathsToShow * FilePathRowHeight);
+    int totalHeight = baseRowHeight + pathsToShow * qRound(theme.scaled(FilePathRowHeight));
 
     return QSize(-1, totalHeight);
 }
